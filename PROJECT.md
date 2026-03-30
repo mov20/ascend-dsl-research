@@ -1,74 +1,75 @@
-# Альтернативные языки для Huawei Ascend
+# Alternative Programming Models for Huawei Ascend
 
-**Статус:** 🟢 Активный
-**Старт:** 2026-03-30
-**Горизонт:** 3–12 месяцев
-**Владелец:** Oleg (рабочий проект)
+**Status:** 🟢 Active
+**Started:** 2026-03-30
+**Horizon:** 3–12 months
+**Owner:** Oleg
 
-## Суть
+## Summary
 
-Исследование и разработка темы альтернативных языков программирования для платформы Huawei Ascend (NPU/AI-ускорители).
+Research and development of alternative programming languages and DSLs for the Huawei Ascend NPU/AI accelerator platform.
 
-## Контекст
+## Context
 
-- Huawei Ascend — линейка AI-процессоров (Ascend 310, 910 и др.)
-- Основной стек: MindSpore, CANN (Compute Architecture for Neural Networks), AscendCL
-- **Фокус: разработка собственного Python DSL** для программирования Ascend NPU
-- **Цель 1 — Простота:** минимум строк кода, понятный синтаксис, низкий порог входа
-- **Цель 2 — Производительность:** ≥90% от пикового потенциала железа Ascend
+- Huawei Ascend — AI processor lineup (Ascend 310, 910, etc.)
+- Primary stack: MindSpore, CANN (Compute Architecture for Neural Networks), AscendCL
+- **Focus: design a custom Python DSL** for programming Ascend NPU
+- **Goal 1 — Simplicity:** minimal lines of code, clean syntax, low barrier to entry
+- **Goal 2 — Performance:** ≥90% of peak hardware potential on Ascend
 
-## Архитектура
+## Architecture
 
-- **Уровень абстракции:** Triton-like kernel DSL (operator/kernel level)
-- **Roadmap:** позже — выход на graph-level для оптимизации полных pipeline (fusion, scheduling)
-- **Компиляция:** Python DSL → MLIR → AscendC code generation
-- **Целевое железо:** Ascend NPU (Cube Unit для матричных операций, Vector Unit для поэлементных)
+- **Abstraction level:** Triton-like kernel DSL (operator/kernel level)
+- **Roadmap:** later — move to graph-level for full pipeline optimization (fusion, scheduling)
+- **Compilation pipeline:** Python DSL → MLIR → AscendC code generation
+- **Target hardware:** Ascend NPU (Cube Unit for matrix ops, Vector Unit for elementwise ops)
 
-## Языки для анализа
+## Languages Under Analysis
 
-| Язык | Кто | Фокус |
-|------|-----|-------|
+| Language | Author | Focus |
+|----------|--------|-------|
 | **Triton** | OpenAI | Kernel DSL, Python, MLIR, GPU |
-| **Triton-Ascend** | Huawei | Форк Triton под Ascend NPU — **ключевой референс/конкурент** |
-| **TileLang** | tile-ai (open-source) | Tile-based абстракции, GPU |
-| **TileLang-Ascend** | tile-ai (open-source) | TileLang для Ascend NPU (A2/A3), AscendC codegen — **ключевой референс/конкурент** |
-| **Pallas** | Google/JAX | Kernel DSL для TPU/GPU через JAX |
+| **Triton-Ascend** | Huawei | Triton fork for Ascend NPU — **key reference/competitor** |
+| **TileLang** | tile-ai (open-source) | Tile-based abstractions, GPU |
+| **TileLang-Ascend** | tile-ai (open-source) | TileLang for Ascend NPU (A2/A3), AscendC codegen — **key reference/competitor** |
+| **Pallas** | Google/JAX | Kernel DSL for TPU/GPU via JAX |
 | **Gluon** | ? | TBD |
-| **cuTile** | NVIDIA | Tile-уровневые абстракции для CUDA |
-| **Mojo** | Modular | Python-superset, systems-level perf |
-| **AscendCraft** | Исследовательский | LLM-driven DSL → AscendC автогенерация ядер (arxiv 2601.22760) |
-| **Helion** | Meta/PyTorch | Python DSL, tile-based, поверх Triton |
+| **cuTile** | NVIDIA | Tile-level abstractions for CUDA |
+| **Mojo** | Modular | Python superset, systems-level performance |
+| **AscendCraft** | Research | LLM-driven DSL → AscendC kernel auto-generation (arxiv 2601.22760) |
+| **Helion** | Meta/PyTorch | Python DSL, tile-based, built on top of Triton |
 
-**Цель анализа:** синтаксические конструкции, абстракции, подходы к достижению near-peak performance. Что берём, что нет, почему.
+**Analysis goal:** syntactic constructs, abstractions, approaches to near-peak performance. What to adopt, what to skip, and why.
 
-## Открытые вопросы
+## Open Questions
 
-- [ ] Есть ли доступ к железу Ascend?
-- [ ] Целевая аудитория DSL? (ML-инженеры, kernel-разработчики?)
-- [x] IR-стратегия: **MLIR** (выбрано)
-- [ ] Лицензирование / open-source?
+- [ ] Access to Ascend hardware for benchmarks?
+- [ ] Target audience for the DSL? (ML engineers, kernel developers?)
+- [x] IR strategy: **MLIR** (decided)
+- [ ] Licensing / open-source plan?
 
 ## Process Rules
 
 1. **Plan first** — always write an action plan and get approval before executing
 2. **Batch work** — avoid one-by-one token-heavy iterations; group tasks
 3. **Documents in English**
-4. **Trigger phrases:**
 
-## Commands
+## Trigger Phrases
 
-- **«Саммари по Ascend»** — получить резюме всех обсуждений и решений
-- **«Саммари по Ascend за [период]»** — резюме за конкретный промежуток
-- **«Новости по Ascend»** — дайджест свежих новостей по индустрии (Huawei Ascend, CANN, MindSpore, альт. языки для NPU)
-- **«Новости по Ascend за [период]»** — новости за конкретный промежуток
+- **"Ascend summary"** — get a summary of all discussions and decisions
+- **"Ascend summary for [period]"** — summary for a specific time range
+- **"Ascend news"** — digest of recent industry news (Huawei Ascend, CANN, MindSpore, alternative NPU languages)
+- **"Ascend news for [period]"** — news for a specific time range
 
-## Лог
+## Log
 
 ### 2026-03-30
-- Трек заведён
-- Определён фокус: Python DSL → MLIR → AscendC codegen
-- Цели: простота (мин. LOC) + ≥90% peak performance
-- Уровень: Triton-like kernel DSL, с заделом на graph-level
-- Составлена сводная таблица 7 языков: `memory/projects/ascend-dsl-comparison.md`
-- Добавлены Ascend-специфичные проекты: Triton-Ascend, TileLang-Ascend, AscendCraft
-- TODO: глубокий анализ AscendCraft (DSL-дизайн, host/kernel разделение, UB/L1 буферы)
+- Project track created
+- Focus defined: Python DSL → MLIR → AscendC codegen
+- Goals: simplicity (min LOC) + ≥90% peak performance
+- Level: Triton-like kernel DSL, with a path to graph-level later
+- High-level comparison table created: `ascend-dsl-comparison.md`
+- Detailed syntax/perf table created: `ascend-dsl-syntax-perf.md`
+- Ascend-specific projects added: Triton-Ascend, TileLang-Ascend, AscendCraft
+- GitHub repo created: https://github.com/mov20/ascend-dsl-research
+- TODO: deep dive into AscendCraft (DSL design, host/kernel split, UB/L1 buffer model)
