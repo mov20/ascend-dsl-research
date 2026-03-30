@@ -96,9 +96,12 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 ### Ascend-Specific Projects
 
 #### Triton-Ascend (Huawei)
-- Repo: https://gitee.com/ascend/triton-ascend
+- **Primary repo (active development):** https://gitcode.com/Ascend/triton-ascend
+- Mirror: https://github.com/Ascend/triton-ascend
 - Docs: https://ascend.github.io/triton-ascend
-- Mirror/discussion: https://gitcode.com/ascend/triton-ascend
+- Related ops/tutorials: https://github.com/Ascend/triton-ascend-ops
+- PyPI: https://pypi.org/project/triton-ascend/
+- Requirements: torch==2.6.0, torch-npu==2.6.0rc1
 
 #### TileLang-Ascend (tile-ai)
 - Repo: https://github.com/tile-ai/tilelang-ascend
