@@ -16,8 +16,7 @@
 | **Abstraction** | Block-level | Tile-level | Tile/Grid+Block | Tile-level | Tile-level (PyTorch ops) | Warp-level | Systems-level |
 | **Target HW** | NVIDIA, AMD, Intel GPU | NVIDIA, AMD GPU, **Huawei Ascend (A2/A3)** | Google TPU, NVIDIA/AMD GPU | NVIDIA GPU (Ampere+) | NVIDIA, AMD, Intel GPU (via Triton) | NVIDIA GPU | NVIDIA, AMD GPU, CPU |
 | **Backend/IR** | MLIR → LLVM → PTX/AMDGPU | TVM-based; Ascend: AscendC & PTO, AscendNPU IR | Mosaic (TPU) / Triton (GPU) | Tile IR → GPU machine code | Compiles to Triton → MLIR | Triton GPU IR | MLIR → LLVM |
-| **Perf vs peak** | ~43% avg (A100), up to 90-99% tuned GEMM | ~1.0-1.1x cuBLAS (≈85-95% peak) | Varies; up to 2x vs torch.compile | Near-native (auto Tensor Cores) | 1.21x vs torch.compile, 1.85x vs Triton | >Triton (warp-level control) | 87-100% vs CUDA (memory-bound) |
-| **Perf vs cuBLAS** | ~90-95% on GEMM (tuned) | 0.97-1.1x | N/A (TPU focus) | ~native | Exceeds Triton | >Triton | 87% compute, ~100% mem-bound |
+| **Perf vs peak** | ~43% avg on A100; up to 90–99% with tuning (A100/H100, GEMM) | ~1.0–1.1x cuBLAS on H100 (≈85–95% peak); Ascend A2/A3: no published numbers (Mar 2026) | Up to 2x vs torch.compile on TPU v4/v5; GPU perf varies | Near-native on Ampere/Hopper (auto Tensor Cores); no third-party benchmarks | 1.21x vs torch.compile, 1.85x vs hand-written Triton on H100 GEMM | Exceeds Triton on NVIDIA; no published HW-specific numbers | ~87% vs CUDA compute-bound; ~100% mem-bound on A100 |
 | **Scheduling** | Automatic + hints | Automatic | Automatic + manual prefetch (TPU) | Automatic (compiler) | Autotuning engine | Explicit (warp-level) | Manual + autotune |
 | **Memory mgmt** | Implicit (compiler) | Explicit tiling (DRAM↔SRAM) | Explicit (BlockSpec) | Implicit (compiler) | Implicit (PyTorch semantics) | Explicit (shared mem) | Manual |
 | **LOC for GEMM** | ~30 | ~25 | ~40 | ~15 | ~15 | ~40 | ~50+ |
