@@ -21,7 +21,7 @@
 | **Scheduling** | Automatic + hints | Automatic | Automatic + manual prefetch (TPU) | Automatic (compiler) | Autotuning engine | Explicit (warp-level) | Manual + autotune |
 | **Memory mgmt** | Implicit (compiler) | Explicit tiling (DRAM↔SRAM) | Explicit (BlockSpec) | Implicit (compiler) | Implicit (PyTorch semantics) | Explicit (shared mem) | Manual |
 | **LOC for GEMM** | ~30 | ~25 | ~40 | ~15 | ~15 | ~40 | ~50+ |
-| **Ascend support** | ✅ **Triton-Ascend** (Huawei fork, gitee.com/ascend/triton-ascend) | ✅ **tilelang-ascend** (A2/A3, AscendC) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Ascend support** | ✅ **Triton-Ascend** (Huawei fork, gitcode.com/Ascend/triton-ascend) | ✅ **tilelang-ascend** (A2/A3, AscendC) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Strengths** | Mature, large community, multi-vendor | Simple, fast, multi-vendor, **Ascend** | Native JAX/TPU integration | Minimal code, auto Tensor Cores | PyTorch-native, excellent perf | Max control, warp-level | Full language, not just kernels |
 | **Weaknesses** | Block-level limits on non-NVIDIA; ~43% avg | Young, sparse docs | JAX lock-in, complex for GPU | NVIDIA only | Depends on Triton backend | NVIDIA only, niche | Closed parts, no TPU/Ascend |
 
