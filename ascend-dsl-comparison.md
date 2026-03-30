@@ -21,6 +21,7 @@
 | **Scheduling** | Automatic + hints | Automatic | Automatic + manual prefetch (TPU) | Automatic (compiler) | Autotuning engine | Explicit (warp-level) | Manual + autotune |
 | **Memory mgmt** | Implicit (compiler) | Explicit tiling (DRAM↔SRAM) | Explicit (BlockSpec) | Implicit (compiler) | Implicit (PyTorch semantics) | Explicit (shared mem) | Manual |
 | **LOC for GEMM** | ~30 <sup>[[1]](#ref-1)</sup> | ~25 <sup>[[2]](#ref-2)</sup> | ~40 <sup>[[3]](#ref-3)</sup> | ~15 <sup>[[4]](#ref-4)</sup> | ~15 <sup>[[5]](#ref-5)</sup> | ~40 <sup>[[6]](#ref-6)</sup> | ~50+ <sup>[[7]](#ref-7)</sup> |
+| **LOC for Flash Attention (fwd kernel)** | ~136 (inner helper 65L + fwd kernel 71L) <sup>[[17]](#ref-17)</sup> | GPU: ~74 <sup>[[18]](#ref-18)</sup><br>Ascend: ~208 (more explicit memory mgmt) <sup>[[19]](#ref-19)</sup> | ~1718 total file (TPU, very verbose); GPU variant much smaller <sup>[[20]](#ref-20)</sup> | N/A — no Flash Attention example yet (Dec 2025) <sup>[[4]](#ref-4)</sup> | ~81 (single kernel incl. autotuning) <sup>[[21]](#ref-21)</sup> | ~645 total file (warp-specialized, very explicit) <sup>[[22]](#ref-22)</sup> | N/A — no official example yet <sup>[[7]](#ref-7)</sup> |
 | **Ascend support** | ✅ **Triton-Ascend** (Huawei fork, gitcode.com/Ascend/triton-ascend) <sup>[[12]](#ref-12)</sup> | ✅ **tilelang-ascend** (A2/A3, AscendC, Sep 2025) <sup>[[11]](#ref-11)</sup> | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Strengths** | Mature, large community, multi-vendor | Simple, fast, multi-vendor, **Ascend** | Native JAX/TPU integration | Minimal code, auto Tensor Cores | PyTorch-native, excellent perf | Max control, warp-level | Full language, not just kernels |
 | **Weaknesses** | Block-level limits on non-NVIDIA; out-of-box ~80% peak <sup>[[8]](#ref-8)</sup> | Young, sparse docs | JAX lock-in, complex for GPU | NVIDIA only (Blackwell+); very early | Depends on Triton backend | NVIDIA only, not for general use <sup>[[8]](#ref-8)</sup> | Closed parts, no TPU/Ascend |
@@ -79,6 +80,12 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 | <a name="ref-14"></a>[14] | [TileLang DeepSeek MLA example](https://github.com/tile-ai/tilelang/blob/main/examples/deepseek_mla/README.md) | ~80 LOC TileLang achieving FlashMLA-level perf on H100 |
 | <a name="ref-15"></a>[15] | [JAX AI Stack production blog](https://developers.googleblog.com/building-production-ai-on-google-cloud-tpus-with-jax/) | Confirms Pallas used by Anthropic, xAI, Apple on Google Cloud TPUs |
 | <a name="ref-16"></a>[16] | [Liger Kernel (LinkedIn)](https://github.com/linkedin/Liger-Kernel) | Triton kernels for LLM training; supports LLaMA, Mistral, Gemma, Qwen2-VL, Phi via HF/Axolotl/TRL |
+| <a name="ref-17"></a>[17] | [Triton tutorial 06-fused-attention.py](https://github.com/triton-lang/triton/blob/main/python/tutorials/06-fused-attention.py) | Official Triton Flash Attention fwd: inner helper 65L + main kernel 71L = ~136L |
+| <a name="ref-18"></a>[18] | [TileLang example_mha_fwd_bshd.py](https://github.com/tile-ai/tilelang/blob/main/examples/flash_attention/example_mha_fwd_bshd.py) | TileLang GPU Flash Attention fwd kernel: ~74L (lines 23–96) |
+| <a name="ref-19"></a>[19] | [TileLang-Ascend flash_attn_bhsd.py](https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/flash_attention/flash_attn_bhsd.py) | TileLang-Ascend Flash Attention fwd kernel: ~208L (lines 8–215), more explicit for AscendC target |
+| <a name="ref-20"></a>[20] | [JAX Pallas tpu/flash_attention.py](https://github.com/jax-ml/jax/blob/main/jax/experimental/pallas/ops/tpu/flash_attention.py) | Pallas Flash Attention for TPU: 1718L total (highly parameterized, production-grade) |
+| <a name="ref-21"></a>[21] | [Helion examples/attention.py](https://github.com/pytorch/helion/blob/main/examples/attention.py) | Helion attention kernel: ~81L (lines 35–115), includes autotuning config |
+| <a name="ref-22"></a>[22] | [Gluon 08-warp-specialization.py](https://github.com/triton-lang/triton/blob/main/python/tutorials/gluon/08-warp-specialization.py) | Gluon warp-specialized attention: 645L total file (very explicit, low-level) |
 
 ---
 
