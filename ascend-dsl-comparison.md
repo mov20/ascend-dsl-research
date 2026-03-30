@@ -58,22 +58,22 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 
 ---
 
-## Source Notes
+## References
 
-| # | Source |
-|---|--------|
-| <a name="ref-1"></a>[1] | [triton-lang/triton](https://github.com/triton-lang/triton) |
-| <a name="ref-2"></a>[2] | [tile-ai/tilelang](https://github.com/tile-ai/tilelang) |
-| <a name="ref-3"></a>[3] | [JAX Pallas docs](https://jax.readthedocs.io/en/latest/pallas/index.html) |
-| <a name="ref-4"></a>[4] | [NVIDIA cuTile blog](https://developer.nvidia.com/blog/nvidia-cuda-13-1-powers-next-gen-gpu-programming-with-nvidia-cuda-tile-and-performance-gains/) · [docs](https://docs.nvidia.com/cuda/cutile-python/) |
-| <a name="ref-5"></a>[5] | [Helion blog (Meta/PyTorch)](https://pytorch.org/blog/helion) |
-| <a name="ref-6"></a>[6] | [Gluon tutorials in triton repo](https://github.com/triton-lang/triton/tree/main/python/tutorials/gluon) |
-| <a name="ref-7"></a>[7] | [Modular/Mojo](https://www.modular.com/mojo) · [portability paper](https://arxiv.org/abs/2509.21039) |
-| <a name="ref-8"></a>[8] | [Triton community meetup notes, Jul 9 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/07-09-2025/notes.md) |
-| <a name="ref-9"></a>[9] | [Triton community meetup notes, Mar 12 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/03-12-2025/notes.md) |
-| <a name="ref-10"></a>[10] | [Mojo portability paper](https://arxiv.org/abs/2509.21039) |
-| <a name="ref-11"></a>[11] | [tile-ai/tilelang-ascend](https://github.com/tile-ai/tilelang-ascend) · [examples](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples) |
-| <a name="ref-12"></a>[12] | [Triton-Ascend primary repo](https://gitcode.com/Ascend/triton-ascend) · [mirror](https://github.com/Ascend/triton-ascend) |
+| # | Source | Notes |
+|---|--------|-------|
+| <a name="ref-1"></a>[1] | [triton-lang/triton](https://github.com/triton-lang/triton) | Main repo; includes tutorials, meetup notes, MLIR pipeline docs |
+| <a name="ref-2"></a>[2] | [tile-ai/tilelang](https://github.com/tile-ai/tilelang) | GPU-side TileLang; TileLang-Ascend is a separate adapter repo |
+| <a name="ref-3"></a>[3] | [JAX Pallas docs](https://jax.readthedocs.io/en/latest/pallas/index.html) | Experimental API; TPU backend via Mosaic, GPU backend via Triton |
+| <a name="ref-4"></a>[4] | [NVIDIA cuTile blog](https://developer.nvidia.com/blog/nvidia-cuda-13-1-powers-next-gen-gpu-programming-with-nvidia-cuda-tile-and-performance-gains/) · [docs](https://docs.nvidia.com/cuda/cutile-python/) | Released Dec 2025 with CUDA 13.1; Blackwell-only initially (sm_100/sm_120) |
+| <a name="ref-5"></a>[5] | [Helion blog (Meta/PyTorch)](https://pytorch.org/blog/helion) | Beta Oct 2025; all perf numbers from official blog post |
+| <a name="ref-6"></a>[6] | [Gluon tutorials in triton repo](https://github.com/triton-lang/triton/tree/main/python/tutorials/gluon) | OpenAI-internal tool; not accepting external contributions yet (as of Jul 2025) |
+| <a name="ref-7"></a>[7] | [Modular/Mojo](https://www.modular.com/mojo) · [portability paper](https://arxiv.org/abs/2509.21039) | Perf numbers from independent portability benchmark paper (H100 + AMD MI300A) |
+| <a name="ref-8"></a>[8] | [Triton meetup notes, Jul 9 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/07-09-2025/notes.md) | Jeff Niu (OpenAI): "out-of-the-box only ~80% peak"; Gluon FMHA on B200 still slower than cuDNN |
+| <a name="ref-9"></a>[9] | [Triton meetup notes, Mar 12 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/03-12-2025/notes.md) | Meta WS case study: Flash Attention without WS = 45%, with WS = 69% compute throughput on H100 |
+| <a name="ref-10"></a>[10] | [Mojo portability paper](https://arxiv.org/abs/2509.21039) | Independent benchmark: ~87% CUDA parity compute-bound, ~100% mem-bound on H100/MI300A |
+| <a name="ref-11"></a>[11] | [tile-ai/tilelang-ascend](https://github.com/tile-ai/tilelang-ascend) · [examples](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples) | Active development; kernel list sourced directly from examples/ directory in repo |
+| <a name="ref-12"></a>[12] | [Triton-Ascend primary repo](https://gitcode.com/Ascend/triton-ascend) · [mirror](https://github.com/Ascend/triton-ascend) | gitcode.com = primary active development; github.com = mirror |
 
 ---
 
