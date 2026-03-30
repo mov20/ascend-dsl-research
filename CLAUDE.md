@@ -29,7 +29,8 @@ ascend-dsl-research/
 ├── ascend-dsl-comparison.md     # Table 1: High-level DSL comparison (7 languages)
 ├── ascend-dsl-syntax-perf.md    # Table 2: Syntax constructs & performance impact
 └── docs/
-    └── research-log.md          # Summary of all research discussions and decisions
+    ├── research-log.md          # Summary of all research discussions and decisions
+    └── asic-landscape.md        # Broader AI accelerator landscape (17 chips)
 ```
 
 ---
