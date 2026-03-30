@@ -2,21 +2,11 @@
 
 *Last updated: 2026-03-30*
 
-> **Context:** This document surveys the broader AI accelerator landscape relevant to our DSL research.
-> The key question: which chips are gaining traction, what are their programming models,
-> and what does this mean for designing a DSL that could eventually target more than just Ascend?
+> **Goal:** Evaluate existing AI accelerator chips and their programming models.
+> Understanding the landscape of available hardware and native programming approaches
+> informs design decisions for the Ascend DSL project.
 
 ---
-
-## Why This Matters for Our DSL
-
-Current analysis (see `ascend-dsl-comparison.md`) shows that almost all existing Python DSLs
-(Triton, TileLang, Helion, cuTile, Gluon, Mojo) are **GPU-first** and have poor or no support
-for ASIC-class accelerators. Huawei Ascend is an outlier — Triton-Ascend and TileLang-Ascend
-exist precisely because it needed custom backends.
-
-If we design our DSL with a clean MLIR-based pipeline, targeting other ASICs in the future
-becomes a matter of adding a new backend, not redesigning the language.
 
 ---
 
@@ -41,7 +31,7 @@ becomes a matter of adding a new backend, not redesigning the language.
 | **Architecture** | ASIC NPU with separate Cube (matrix), Vector, Scalar units; multi-AI-core topology |
 | **Programming model** | **AscendC** (C++-like DSL with explicit CopyIn→Compute→CopyOut pipeline) |
 | **Memory hierarchy** | L0A/L0B/L0C (matrix buffers), L1 (input), UB (unified buffer), GM (global memory/HBM) |
-| **DSL support** | ✅ Triton-Ascend (Huawei fork) · ✅ TileLang-Ascend (tile-ai) — our primary target |
+| **DSL support** | ✅ Triton-Ascend (Huawei fork) · ✅ TileLang-Ascend (tile-ai) |
 | **Production** | Deployed in Huawei data centers, China cloud providers (Alibaba Cloud, Baidu Cloud) |
 | **Key links** | https://gitcode.com/Ascend/triton-ascend · https://www.hiascend.com |
 
@@ -175,8 +165,6 @@ becomes a matter of adding a new backend, not redesigning the language.
 
 ---
 
-## China AI Chip Ecosystem
-
 ### 13. Cambricon MLU — China's Dedicated AI Chip Leader
 
 | | |
@@ -231,7 +219,6 @@ becomes a matter of adding a new backend, not redesigning the language.
 | **cuTile** | ✅ Blackwell+ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Gluon** | ✅ H100/B200 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Mojo** | ✅ Native | ✅ AMD | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Our DSL (goal)** | 🔮 via MLIR | 🔮 via MLIR | 🔮 via MLIR | 🔮 via MLIR | ✅ Primary target | 🔮 via Triton-MTIA | 🔮 via NKI bridge | 🔮 via MLIR | 🔮 via MLIR | ❌ incompatible | 🔮 BANG C backend | 🔮 MUSA-like | 🔮 SIMT-like |
 
 ---
 
