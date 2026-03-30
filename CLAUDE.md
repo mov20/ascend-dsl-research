@@ -1,8 +1,10 @@
-# CLAUDE.md — Project Guide for Claude Code
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-This repository is a research project on **alternative Python DSLs for Huawei Ascend NPU**.
+Research project on **alternative Python DSLs for Huawei Ascend NPU**.
 
 **Goal:** Design a Python DSL for Ascend NPU that achieves:
 - **Simplicity** — minimal lines of code, low barrier to entry
@@ -13,24 +15,19 @@ This repository is a research project on **alternative Python DSLs for Huawei As
 Python DSL → MLIR → AscendC → CANN compiler → NPU binary
 ```
 
-**Owner:** Oleg  
-**Status:** 🟢 Active  
-**Started:** 2026-03-30
+**Owner:** Oleg | **GitHub:** https://github.com/mov20/ascend-dsl-research
+**Status:** Active | **Started:** 2026-03-30
 
 ---
 
-## Repository Structure
+## Trigger Phrases
 
-```
-ascend-dsl-research/
-├── CLAUDE.md                    # This file — read first
-├── README.md                    # Public project description
-├── PROJECT.md                   # Project tracker, open questions, decisions log
-├── ascend-dsl-comparison.md     # Table 1: High-level DSL comparison (7 languages)
-├── ascend-dsl-syntax-perf.md    # Table 2: Syntax constructs & performance impact
-└── docs/
-    └── research-log.md          # Summary of all research discussions and decisions
-```
+When Oleg uses these, execute accordingly:
+
+- **"Ascend summary"** — read `docs/research-log.md` + `PROJECT.md`, produce a full summary of all discussions and decisions
+- **"Ascend summary for [period]"** — same, filtered to that time range
+- **"Ascend news"** — web-search for recent news on Huawei Ascend, CANN, NPU DSLs, and summarize
+- **"Ascend news for [period]"** — news for a specific time range
 
 ---
 
@@ -52,18 +49,12 @@ ascend-dsl-research/
 
 - **Main branch:** `main` — stable, reviewed content only
 - **Feature branches:** create for any non-trivial change, open PR for review
-- **PR process:** push branch → create PR → Oleg reviews/comments → apply feedback → merge
 
 ```bash
-# Start new feature
 git checkout -b <branch-name>
-
-# Push and create PR
 git push -u origin <branch-name>
-# Then create PR via GitHub API or web UI
-
-# After merge, sync local main
-git checkout main && git pull
+# Then create PR via gh or web UI
+git checkout main && git pull  # after merge
 ```
 
 ---
@@ -80,11 +71,28 @@ git checkout main && git pull
 
 ---
 
+## Languages Under Analysis
+
+| Language | Author | Notes |
+|----------|--------|-------|
+| Triton | OpenAI | Kernel DSL, Python, MLIR, GPU — baseline reference |
+| Triton-Ascend | Huawei | Triton fork for Ascend NPU — **primary competitor** |
+| TileLang | tile-ai | Tile-based abstractions, GPU |
+| TileLang-Ascend | tile-ai | TileLang for Ascend NPU (A2/A3), AscendC codegen — **primary competitor** |
+| Helion | Meta/PyTorch | Python DSL, tile-based, built on Triton — **primary syntax reference** |
+| cuTile | NVIDIA | Tile-level abstractions for CUDA — syntax reference |
+| Pallas | Google/JAX | Kernel DSL for TPU/GPU via JAX |
+| Mojo | Modular | Python superset, systems-level performance |
+| AscendCraft | Research | LLM-driven DSL → AscendC auto-generation — see arxiv 2601.22760 |
+| Gluon | ? | TBD |
+
+---
+
 ## Key References
 
 | Project | What it is | Link |
 |---------|-----------|------|
-| Triton-Ascend | Huawei's Triton fork for Ascend (primary active dev) | https://gitcode.com/Ascend/triton-ascend |
+| Triton-Ascend | Huawei's Triton fork for Ascend | https://gitcode.com/Ascend/triton-ascend |
 | TileLang-Ascend | tile-ai's TileLang adapter for Ascend (A2/A3) | https://github.com/tile-ai/tilelang-ascend |
 | AscendCraft | LLM-driven DSL → AscendC auto-generation | https://arxiv.org/abs/2601.22760 |
 | Triton community meetups | Official meetup notes (performance data, etc.) | https://github.com/triton-lang/triton/tree/main/docs/meetups |
@@ -92,14 +100,12 @@ git checkout main && git pull
 
 ---
 
-## Trigger Phrases
+## Key Files
 
-When working in this repo, recognize these commands from Oleg:
-
-- **"Ascend summary"** — produce a summary of all discussions and decisions (read `docs/research-log.md` + `PROJECT.md`)
-- **"Ascend summary for [period]"** — summary for a specific time range
-- **"Ascend news"** — search for recent industry news on Huawei Ascend, CANN, NPU DSLs, and summarize
-- **"Ascend news for [period]"** — news for a specific time range
+- `PROJECT.md` — project tracker, open questions, decisions log
+- `ascend-dsl-comparison.md` — Table 1: high-level DSL comparison
+- `ascend-dsl-syntax-perf.md` — Table 2: syntax constructs & performance impact
+- `docs/research-log.md` — running log of all research discussions and decisions
 
 ---
 
