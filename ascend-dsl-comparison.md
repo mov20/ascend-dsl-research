@@ -2,6 +2,7 @@
 
 *Last updated: 2026-03-30*
 
+
 > **Table 1 (this):** High-level language comparison
 > **Table 2:** Syntax constructs & performance impact → `ascend-dsl-syntax-perf.md`
 
@@ -53,3 +54,75 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 | Explicit memory hints | Pallas (prefetch), Gluon | Required for 90% peak |
 | PyTorch-compatible syntax | Helion | Low barrier to entry |
 | Warp/wave-level escape hatch | Gluon | For edge cases when auto isn't enough |
+
+---
+
+## References
+
+### DSLs Analyzed
+
+#### Triton (OpenAI)
+- Repo: https://github.com/triton-lang/triton
+- Docs: https://triton-lang.org
+- Paper: *Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations* (Tillet et al., 2019) — https://dl.acm.org/doi/10.1145/3315508.3329973
+
+#### TileLang (tile-ai)
+- Repo: https://github.com/tile-ai/tilelang
+- Docs: https://tilelang.readthedocs.io
+
+#### Pallas (Google / JAX)
+- Docs: https://jax.readthedocs.io/en/latest/pallas/index.html
+- Source (in JAX): https://github.com/google/jax/tree/main/jax/experimental/pallas
+
+#### cuTile (NVIDIA)
+- Blog: https://developer.nvidia.com/blog/cutile-a-new-programming-model-for-nvidia-gpus/
+- Repo: https://github.com/NVIDIA/cutile
+
+#### Helion (Meta / PyTorch)
+- Repo: https://github.com/pytorch-labs/helion
+- Blog: https://pytorch.org/blog/helion
+
+#### Gluon
+- Repo: https://github.com/gluon-lang/gluon *(verify — may refer to different project)*
+- Paper: *Gluon: A GPU Kernel Language with Warp-level Control* — search arxiv
+
+#### Mojo (Modular)
+- Site: https://www.modular.com/mojo
+- Docs: https://docs.modular.com/mojo
+- Repo (stdlib): https://github.com/modularml/mojo
+
+---
+
+### Ascend-Specific Projects
+
+#### Triton-Ascend (Huawei)
+- Repo: https://gitee.com/ascend/triton-ascend
+- Docs: https://ascend.github.io/triton-ascend
+- Mirror/discussion: https://gitcode.com/ascend/triton-ascend
+
+#### TileLang-Ascend (tile-ai)
+- Repo: https://github.com/tile-ai/tilelang-ascend
+- Released: September 2025
+- Targets: Ascend A2/A3 NPU
+- Requirements: CANN ≥ 8.2, torch-npu ≥ 2.6
+
+#### AscendCraft
+- Paper: *AscendCraft: LLM-Driven Automatic AscendC Kernel Generation* — https://arxiv.org/abs/2601.22760
+- Type: LLM-driven DSL → AscendC auto-generation (not a hand-programming DSL)
+
+---
+
+### Huawei Ascend / CANN
+
+- CANN (Compute Architecture for Neural Networks): https://www.hiascend.com/software/cann
+- AscendC Programming Guide: https://www.hiascend.com/document/detail/en/canncommercial/80RC1/operatordev/tbeaicpudevg/atlasascendc_10_0001.html
+- Ascend Community: https://www.hiascend.com/en/
+- MindSpore: https://www.mindspore.cn/en
+
+---
+
+### Background & IR
+
+- MLIR: https://mlir.llvm.org
+- MLIR Dialects overview: https://mlir.llvm.org/docs/Dialects/
+- Triton's MLIR pipeline (TritonGPU IR): https://triton-lang.org/main/dialects/dialects.html
