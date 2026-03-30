@@ -9,20 +9,20 @@
 
 | | **Triton** | **TileLang** | **Pallas** | **cuTile** | **Helion** | **Gluon** | **Mojo** |
 |---|---|---|---|---|---|---|---|
-| **Developer** | OpenAI [1] | tile-ai (open-source) [2] | Google (JAX) [3] | NVIDIA [4] | Meta (PyTorch) [5] | OpenAI [6] | Modular [7] |
-| **Year** | 2021 [1] | 2024 [2] | 2023 [3] | 2025 [4] | 2025 [5] | 2025 [6] | 2023 [7] |
+| **Developer** | OpenAI <sup>[[1]](#ref-1)</sup> | tile-ai (open-source) <sup>[[2]](#ref-2)</sup> | Google (JAX) <sup>[[3]](#ref-3)</sup> | NVIDIA <sup>[[4]](#ref-4)</sup> | Meta (PyTorch) <sup>[[5]](#ref-5)</sup> | OpenAI <sup>[[6]](#ref-6)</sup> | Modular <sup>[[7]](#ref-7)</sup> |
+| **Year** | 2021 | 2024 | 2023 | 2025 | 2025 | 2025 | 2023 |
 | **Type** | Python DSL | Python DSL | Python DSL (JAX) | Python/Julia DSL | Python DSL (PyTorch) | Triton extension | Language (Python superset) |
 | **Abstraction** | Block-level | Tile-level | Tile/Grid+Block | Tile-level | Tile-level (PyTorch ops) | Warp-level | Systems-level |
-| **Target HW** | NVIDIA, AMD, Intel GPU | NVIDIA, AMD GPU, **Huawei Ascend (A2/A3)** [2] | Google TPU, NVIDIA/AMD GPU | NVIDIA GPU (Ampere+) [4] | NVIDIA, AMD, Intel GPU (via Triton) [5] | NVIDIA GPU (H100, B200) [6] | NVIDIA, AMD GPU, CPU [7] |
-| **Backend/IR** | MLIR → LLVM → PTX/AMDGPU [1] | TVM-based; Ascend: AscendC & PTO, AscendNPU IR [2] | Mosaic (TPU) / Triton (GPU) [3] | Tile IR → GPU machine code [4] | Compiles to Triton → MLIR [5] | Triton GPU IR [6] | MLIR → LLVM [7] |
-| **Perf vs peak** | Out-of-the-box ~80% peak [8]; Flash Attention without warp specialization: 45% compute throughput on H100, with WS: 69% [9]; 90%+ only with heavily tuned kernels (GEMM, FA3) | ~1.0–1.1x cuBLAS on H100 (≈85–95% peak) [2]; Ascend A2/A3: no published numbers (Mar 2026) | Up to 2x vs torch.compile on TPU v4/v5 [3]; GPU perf varies | Near-native on Ampere/Hopper (auto Tensor Cores) [4]; no third-party benchmarks | 1.21x vs torch.compile, 1.85x vs hand-written Triton on H100 GEMM [5] | FMHA on B200: still slower than cuDNN out-of-the-box [8]; better than stock Triton | ~87% vs CUDA compute-bound; ~100% mem-bound on A100 [10] |
-| **Supported kernels** | GEMM, Flash Attention (FA2/FA3), softmax, layer norm, RMSNorm, MoE gating, element-wise fused ops, scan/reduction, dropout+bias fusions [1] | GPU: GEMM (incl. batch, int4 dequant, split-K), Flash Attention, MLA decoding, FlashMLA, softmax, layer norm, element-wise, reduction [2]; **Ascend:** GEMM, batch GEMM, conv, Flash Attention, softmax, normalization, activation, GEMV, grouped GEMM, sparse FA, positional embedding, cross-entropy, linear attention/RNN, top-k [11] | GEMM, Flash Attention (TPU/GPU), layer norm, softmax, element-wise ops, scan/reduction, custom attention masks [3] | GEMM, vector add; attention/softmax via tile abstractions — limited published examples (Blackwell-only, Dec 2025) [4] | GEMM (15 LOC), softmax (2.28x torch.compile), RMSNorm (bwd), JSD (6.22x torch.compile), int4-GEMM (4.5x Triton), Mamba-2 chunk-scan, Flash Attention [5] | FMHA (Flash Attention style, B200/H100) with warp specialization; MMA (WGMMA); TMA load/store; experimental [6] | GEMM, matmul, stencil, BabelStream (memory ops), element-wise; softmax/attention via custom fused kernels; primary focus: systems-level portability [10] |
+| **Target HW** | NVIDIA, AMD, Intel GPU | NVIDIA, AMD GPU, **Huawei Ascend (A2/A3)** <sup>[[2]](#ref-2)</sup> | Google TPU, NVIDIA/AMD GPU | NVIDIA GPU (Ampere+) <sup>[[4]](#ref-4)</sup> | NVIDIA, AMD, Intel GPU (via Triton) <sup>[[5]](#ref-5)</sup> | NVIDIA GPU (H100, B200) <sup>[[6]](#ref-6)</sup> | NVIDIA, AMD GPU, CPU <sup>[[7]](#ref-7)</sup> |
+| **Backend/IR** | MLIR → LLVM → PTX/AMDGPU <sup>[[1]](#ref-1)</sup> | TVM-based; Ascend: AscendC & PTO, AscendNPU IR <sup>[[2]](#ref-2)</sup> | Mosaic (TPU) / Triton (GPU) <sup>[[3]](#ref-3)</sup> | Tile IR → GPU machine code <sup>[[4]](#ref-4)</sup> | Compiles to Triton → MLIR <sup>[[5]](#ref-5)</sup> | Triton GPU IR <sup>[[6]](#ref-6)</sup> | MLIR → LLVM <sup>[[7]](#ref-7)</sup> |
+| **Perf vs peak** | Out-of-the-box ~80% peak <sup>[[8]](#ref-8)</sup>; Flash Attention without warp specialization: 45% compute throughput on H100, with WS: 69% <sup>[[9]](#ref-9)</sup>; 90%+ only with heavily tuned kernels (GEMM, FA3) | ~1.0–1.1x cuBLAS on H100 (≈85–95% peak) <sup>[[2]](#ref-2)</sup>; Ascend A2/A3: no published numbers (Mar 2026) | Up to 2x vs torch.compile on TPU v4/v5 <sup>[[3]](#ref-3)</sup>; GPU perf varies | Near-native on Ampere/Hopper (auto Tensor Cores) <sup>[[4]](#ref-4)</sup>; no third-party benchmarks | 1.21x vs torch.compile, 1.85x vs hand-written Triton on H100 GEMM <sup>[[5]](#ref-5)</sup> | FMHA on B200: still slower than cuDNN out-of-the-box <sup>[[8]](#ref-8)</sup>; better than stock Triton | ~87% vs CUDA compute-bound; ~100% mem-bound on A100 <sup>[[10]](#ref-10)</sup> |
+| **Supported kernels** | GEMM, Flash Attention (FA2/FA3), softmax, layer norm, RMSNorm, MoE gating, element-wise fused ops, scan/reduction, dropout+bias fusions <sup>[[1]](#ref-1)</sup> | GPU: GEMM (incl. batch, int4 dequant, split-K), Flash Attention, MLA decoding, FlashMLA, softmax, layer norm, element-wise, reduction <sup>[[2]](#ref-2)</sup>; **Ascend:** GEMM, batch GEMM, conv, Flash Attention, softmax, normalization, activation, GEMV, grouped GEMM, sparse FA, positional embedding, cross-entropy, linear attention/RNN, top-k <sup>[[11]](#ref-11)</sup> | GEMM, Flash Attention (TPU/GPU), layer norm, softmax, element-wise ops, scan/reduction, custom attention masks <sup>[[3]](#ref-3)</sup> | GEMM, vector add; attention/softmax via tile abstractions — limited published examples (Blackwell-only, Dec 2025) <sup>[[4]](#ref-4)</sup> | GEMM (15 LOC), softmax (2.28x torch.compile), RMSNorm (bwd), JSD (6.22x torch.compile), int4-GEMM (4.5x Triton), Mamba-2 chunk-scan, Flash Attention <sup>[[5]](#ref-5)</sup> | FMHA (Flash Attention style, B200/H100) with warp specialization; MMA (WGMMA); TMA load/store; experimental <sup>[[6]](#ref-6)</sup> | GEMM, matmul, stencil, BabelStream (memory ops), element-wise; softmax/attention via custom fused kernels; systems-level portability focus <sup>[[10]](#ref-10)</sup> |
 | **Scheduling** | Automatic + hints | Automatic | Automatic + manual prefetch (TPU) | Automatic (compiler) | Autotuning engine | Explicit (warp-level) | Manual + autotune |
 | **Memory mgmt** | Implicit (compiler) | Explicit tiling (DRAM↔SRAM) | Explicit (BlockSpec) | Implicit (compiler) | Implicit (PyTorch semantics) | Explicit (shared mem) | Manual |
-| **LOC for GEMM** | ~30 [1] | ~25 [2] | ~40 [3] | ~15 [4] | ~15 [5] | ~40 [6] | ~50+ [7] |
-| **Ascend support** | ✅ **Triton-Ascend** (Huawei fork, gitcode.com/Ascend/triton-ascend) [12] | ✅ **tilelang-ascend** (A2/A3, AscendC, Sep 2025) [11] | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **LOC for GEMM** | ~30 <sup>[[1]](#ref-1)</sup> | ~25 <sup>[[2]](#ref-2)</sup> | ~40 <sup>[[3]](#ref-3)</sup> | ~15 <sup>[[4]](#ref-4)</sup> | ~15 <sup>[[5]](#ref-5)</sup> | ~40 <sup>[[6]](#ref-6)</sup> | ~50+ <sup>[[7]](#ref-7)</sup> |
+| **Ascend support** | ✅ **Triton-Ascend** (Huawei fork, gitcode.com/Ascend/triton-ascend) <sup>[[12]](#ref-12)</sup> | ✅ **tilelang-ascend** (A2/A3, AscendC, Sep 2025) <sup>[[11]](#ref-11)</sup> | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Strengths** | Mature, large community, multi-vendor | Simple, fast, multi-vendor, **Ascend** | Native JAX/TPU integration | Minimal code, auto Tensor Cores | PyTorch-native, excellent perf | Max control, warp-level | Full language, not just kernels |
-| **Weaknesses** | Block-level limits on non-NVIDIA; out-of-box ~80% peak [8] | Young, sparse docs | JAX lock-in, complex for GPU | NVIDIA only (Blackwell+); very early | Depends on Triton backend | NVIDIA only, not for general use [8] | Closed parts, no TPU/Ascend |
+| **Weaknesses** | Block-level limits on non-NVIDIA; out-of-box ~80% peak <sup>[[8]](#ref-8)</sup> | Young, sparse docs | JAX lock-in, complex for GPU | NVIDIA only (Blackwell+); very early | Depends on Triton backend | NVIDIA only, not for general use <sup>[[8]](#ref-8)</sup> | Closed parts, no TPU/Ascend |
 
 ---
 
@@ -32,15 +32,15 @@
 TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural fit for accelerator memory hierarchies (HBM → L2 → SRAM/shared → registers).
 
 ### 2. TileLang — only third-party DSL with Ascend support
-**TileLang-Ascend** [11] (released Sep 2025) — only Python DSL with Ascend NPU backend (A2/A3). Generates AscendC code, requires CANN ≥8.2. Key competitor/reference for our DSL.
+**TileLang-Ascend** <sup>[[11]](#ref-11)</sup> (released Sep 2025) — only Python DSL with Ascend NPU backend (A2/A3). Generates AscendC code, requires CANN ≥8.2. Key competitor/reference for our DSL.
 
 ### 3. Triton-Ascend — Huawei's official fork
-**Triton-Ascend** [12] — Huawei's own port of Triton to Ascend. Active development at gitcode.com/Ascend/triton-ascend.
+**Triton-Ascend** <sup>[[12]](#ref-12)</sup> — Huawei's own port of Triton to Ascend. Active development at gitcode.com/Ascend/triton-ascend.
 
 ### 4. Performance ceiling
-- **Gluon** shows that exceeding Triton requires **warp/wave-level control** [8]
-- **cuTile** demonstrates that **compiler automation** can deliver near-native with minimal code [4]
-- **Helion** proves that **PyTorch-level abstraction + autotuning** can beat hand-written Triton (1.85x on H100 GEMM) [5]
+- **Gluon** shows that exceeding Triton requires **warp/wave-level control** <sup>[[8]](#ref-8)</sup>
+- **cuTile** demonstrates that **compiler automation** can deliver near-native with minimal code <sup>[[4]](#ref-4)</sup>
+- **Helion** proves that **PyTorch-level abstraction + autotuning** can beat hand-written Triton (1.85x on H100 GEMM) <sup>[[5]](#ref-5)</sup>
 
 ### 5. For 90% peak on Ascend:
 - Explicit **Cube Unit** (matrix) vs **Vector Unit** (elementwise) vs **Scalar Unit** management
@@ -50,11 +50,11 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 ### 6. Syntax patterns worth borrowing
 | Pattern | Source | Why it matters |
 |---------|--------|----------------|
-| `tile` loop as core primitive | Helion [5], TileLang [2] | Intuitive, minimal code |
-| Automatic scheduling + autotuning | Helion [5], cuTile [4] | Key to simplicity |
-| Explicit memory hints | Pallas [3], Gluon [6] | Required for 90% peak |
-| PyTorch-compatible syntax | Helion [5] | Low barrier to entry |
-| Warp/wave-level escape hatch | Gluon [6] | For edge cases when auto isn't enough |
+| `tile` loop as core primitive | Helion <sup>[[5]](#ref-5)</sup>, TileLang <sup>[[2]](#ref-2)</sup> | Intuitive, minimal code |
+| Automatic scheduling + autotuning | Helion <sup>[[5]](#ref-5)</sup>, cuTile <sup>[[4]](#ref-4)</sup> | Key to simplicity |
+| Explicit memory hints | Pallas <sup>[[3]](#ref-3)</sup>, Gluon <sup>[[6]](#ref-6)</sup> | Required for 90% peak |
+| PyTorch-compatible syntax | Helion <sup>[[5]](#ref-5)</sup> | Low barrier to entry |
+| Warp/wave-level escape hatch | Gluon <sup>[[6]](#ref-6)</sup> | For edge cases when auto isn't enough |
 
 ---
 
@@ -62,18 +62,18 @@ TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural
 
 | # | Source |
 |---|--------|
-| [1] | triton-lang/triton — github.com/triton-lang/triton |
-| [2] | tile-ai/tilelang — github.com/tile-ai/tilelang |
-| [3] | JAX Pallas docs — jax.readthedocs.io/en/latest/pallas |
-| [4] | NVIDIA cuTile blog + docs — developer.nvidia.com/blog/…cutile… |
-| [5] | Helion blog (Meta/PyTorch) — pytorch.org/blog/helion |
-| [6] | Gluon in triton repo — github.com/triton-lang/triton/…/gluon |
-| [7] | Modular/Mojo — modular.com/mojo; arxiv.org/abs/2509.21039 |
-| [8] | Triton community meetup notes, Jul 9 2025 — github.com/triton-lang/triton/…/meetups/07-09-2025 |
-| [9] | Triton community meetup notes, Mar 12 2025 — github.com/triton-lang/triton/…/meetups/03-12-2025 |
-| [10] | Mojo portability paper — arxiv.org/abs/2509.21039 |
-| [11] | tile-ai/tilelang-ascend examples — github.com/tile-ai/tilelang-ascend/…/examples |
-| [12] | Triton-Ascend primary repo — gitcode.com/Ascend/triton-ascend |
+| <a name="ref-1"></a>[1] | [triton-lang/triton](https://github.com/triton-lang/triton) |
+| <a name="ref-2"></a>[2] | [tile-ai/tilelang](https://github.com/tile-ai/tilelang) |
+| <a name="ref-3"></a>[3] | [JAX Pallas docs](https://jax.readthedocs.io/en/latest/pallas/index.html) |
+| <a name="ref-4"></a>[4] | [NVIDIA cuTile blog](https://developer.nvidia.com/blog/nvidia-cuda-13-1-powers-next-gen-gpu-programming-with-nvidia-cuda-tile-and-performance-gains/) · [docs](https://docs.nvidia.com/cuda/cutile-python/) |
+| <a name="ref-5"></a>[5] | [Helion blog (Meta/PyTorch)](https://pytorch.org/blog/helion) |
+| <a name="ref-6"></a>[6] | [Gluon tutorials in triton repo](https://github.com/triton-lang/triton/tree/main/python/tutorials/gluon) |
+| <a name="ref-7"></a>[7] | [Modular/Mojo](https://www.modular.com/mojo) · [portability paper](https://arxiv.org/abs/2509.21039) |
+| <a name="ref-8"></a>[8] | [Triton community meetup notes, Jul 9 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/07-09-2025/notes.md) |
+| <a name="ref-9"></a>[9] | [Triton community meetup notes, Mar 12 2025](https://github.com/triton-lang/triton/blob/main/docs/meetups/03-12-2025/notes.md) |
+| <a name="ref-10"></a>[10] | [Mojo portability paper](https://arxiv.org/abs/2509.21039) |
+| <a name="ref-11"></a>[11] | [tile-ai/tilelang-ascend](https://github.com/tile-ai/tilelang-ascend) · [examples](https://github.com/tile-ai/tilelang-ascend/tree/ascendc_pto/examples) |
+| <a name="ref-12"></a>[12] | [Triton-Ascend primary repo](https://gitcode.com/Ascend/triton-ascend) · [mirror](https://github.com/Ascend/triton-ascend) |
 
 ---
 
