@@ -60,6 +60,81 @@ validated at compile time.
 
 ### 3.1 AscendC
 
+AscendC is the official C++ kernel language for Ascend NPU and the compilation
+target for PyAsc2. Understanding how it handles the three key challenges defines
+the baseline that PyAsc2 must improve upon.
+
+#### Sync Insertion
+
+AscendC exposes synchronization directly to the user via `TPipe` and `TQue`.
+Every data transfer requires explicit `EnQue`/`DeQue` calls; every pipeline
+stage boundary requires explicit `SetEventId`/`WaitEventId`:
+
+```cpp
+TPipe pipe;
+TQue<QuePosition::VECIN, 2> inQueue;
+TQue<QuePosition::VECOUT, 1> outQueue;
+pipe.InitBuffer(inQueue, 2, TILE_SIZE);    // TPipe allocates UB memory for TQue buffers
+pipe.InitBuffer(outQueue, 1, TILE_SIZE);
+
+// MTE2 stage: load
+LocalTensor<half> tile = inQueue.AllocTensor<half>();
+DataCopy(tile, gm_src[offset], TILE_SIZE);
+inQueue.EnQue(tile);              // signal: load done
+
+// Vector stage: compute
+LocalTensor<half> tile = inQueue.DeQue<half>();   // wait: load done
+Add(out, tile, tile2, TILE_SIZE);
+outQueue.EnQue(out);
+
+// MTE3 stage: store
+LocalTensor<half> out = outQueue.DeQue<half>();
+DataCopy(gm_dst[offset], out, TILE_SIZE);
+outQueue.FreeTensor(out);
+
+// Cross-unit sync (e.g. between independent pipelines)
+pipe.SetEventId(EVENT_ID0);       // producer signals
+pipe.WaitEventId(EVENT_ID0);      // consumer waits
+```
+Source: Ascend C Operator Development Guide, CANN 8.0 https://www.hiascend.com/document/detail/en/canncommercial/800/opdevg/Ascendcopdevg/atlas_ascendc_10_0001.html
+
+Missing or misplaced EnQue/DeQue / SetEventId/WaitEventId causes silent data hazards. AscendC does not insert any barriers automatically.
+**Conclusion**: AscendC doesn't solve the challenge — it exposes it. The user is responsible for every barrier manually. This is a source of bugs and boilerplate.
+
+#### Ping-pong
+
+```cpp
+// Queue depth=2: two UB slots (ping + pong)
+// Depth is set in TWO places — they must match:
+constexpr int QUEUE_DEPTH = 2;
+
+TQue<QuePosition::VECIN, QUEUE_DEPTH> inQueue;   // (1) template param
+pipe.InitBuffer(inQueue, QUEUE_DEPTH, TILE_SIZE); // (2) runtime init
+
+for (int i = 0; i < num_tiles; i++) {
+    // MTE2: load tile i+1 while Vector computes tile i
+    LocalTensor<half> tile = inQueue.AllocTensor<half>();
+    DataCopy(tile, gm_src[(i+1) * TILE_SIZE], TILE_SIZE);
+    inQueue.EnQue(tile);
+
+    // Vector: compute tile i
+    LocalTensor<half> cur = inQueue.DeQue<half>();
+    Add(out, cur, cur2, TILE_SIZE);
+    inQueue.FreeTensor(cur);
+}
+```
+Depth 2 = two slots in UB. While Vector works on ping, MTE2 loads into pong. But:
+
+User chooses queue depth manually
+User structures the loop manually to achieve overlap
+Compiler doesn't help
+
+**Conclusion**: AscendC supports ping-pong, but requires manual orchestration. No automatic loop body partitioning.
+
+#### UB Memory Allocation and Reuse
+TBD
+
+
 ### 3.2 Triton
 
 ### 3.3 cuTile
