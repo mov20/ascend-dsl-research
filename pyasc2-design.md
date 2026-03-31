@@ -133,7 +133,28 @@ Compiler doesn't help
 **Conclusion**: AscendC supports ping-pong, but requires manual orchestration. No automatic loop body partitioning.
 
 #### UB Memory Allocation and Reuse
-TBD
+
+```cpp
+TPipe pipe;
+TQue<QuePosition::VECIN,  2> inQueueA;   // reserves 2 × TILE_SIZE bytes in UB
+TQue<QuePosition::VECIN,  2> inQueueB;   // reserves 2 × TILE_SIZE bytes in UB
+TQue<QuePosition::VECOUT, 1> outQueue;   // reserves 1 × TILE_SIZE bytes in UB
+// Total: 5 × TILE_SIZE — must fit in 256 KB; no compiler check
+
+pipe.InitBuffer(inQueueA,  2, TILE_SIZE);
+pipe.InitBuffer(inQueueB,  2, TILE_SIZE);
+pipe.InitBuffer(outQueue,  1, TILE_SIZE);
+
+for (int i = 0; i < num_tiles; i++) {
+    LocalTensor<half> a = inQueueA.AllocTensor<half>();  // acquire free UB slot
+    // ... use a ...
+    inQueueA.FreeTensor(a);  // return slot — reused next iteration
+}
+```
+
+`TPipe` partitions UB at kernel initialization via `InitBuffer` — one call per queue, each reserving `depth × tile_size` bytes statically. Within the loop, `AllocTensor` acquires a free slot from the queue's pool and `FreeTensor` returns it for reuse on the next iteration. Two queues never share a UB region, even if they are never live simultaneously — there is no liveness analysis.
+
+**Conclusion**: AscendC requires the user to manually plan UB layout — sizing each buffer, choosing queue depths, and validating the total fit within 256 KB. Exceeding the limit causes silent memory corruption at runtime. The compiler provides no assistance.
 
 
 ### 3.2 Triton
