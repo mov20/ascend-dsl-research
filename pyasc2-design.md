@@ -56,33 +56,6 @@ validated at compile time.
 - **Sync model**: `set_flag`/`wait_flag` between PIPE_MTE2 and PIPE_V are still
   explicit even on A5 (confirmed in PTO engram kernel source).
 
-Ascend 910B AI Core has two types of compute cores:
-- **AIC** (Cube) — matrix/tensor operations
-- **AIV** (Vector) — vector operations; 1 AIC : 2 AIV ratio on 910B
-
-Each core has its own MTE (DMA), Scalar Unit, and Compute Unit.
-AIC and AIV have no direct interconnect — data exchange goes through L2/Global Memory.
-
-### 2.1 Synchronization Insertion
-
-MTE and Compute Unit within each core run in parallel. Explicit `set_flag`/`wait_flag`
-barriers must be inserted between them. Missing barriers cause silent data hazards;
-redundant barriers cause stalls. Must be fully automated by the compiler.
-
-### 2.2 Ping-Pong (Double Buffering)
-
-MTE loads for tile N+1 must overlap with Compute on tile N.
-Requires the compiler to split the loop body, hoist loads, and insert correct barriers —
-without user annotation.
-
-### 2.3 UB Memory Allocation and Reuse
-
-On-chip UB (Unified Buffer) is ~256 KB per Da Vinci core (910B).
-After loop unrolling, many tile SSA values can be live simultaneously.
-Compiler must compute liveness and reuse freed UB regions.
-Tile shapes are statically known at JIT time; total live footprint must be
-validated at compile time.
-
 ## 3. Programming Model Analysis
 
 ### 3.1 AscendC
