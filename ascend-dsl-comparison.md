@@ -33,31 +33,14 @@
 ### 1. Trend: Tile-based abstractions dominate
 TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural fit for accelerator memory hierarchies (HBM → L2 → SRAM/shared → registers).
 
-### 2. TileLang — only third-party DSL with Ascend support
-**TileLang-Ascend** <sup>[[11]](#ref-11)</sup> (released Sep 2025) — only Python DSL with Ascend NPU backend (A2/A3). Generates AscendC code, requires CANN ≥8.2. Key competitor/reference for our DSL.
 
 ### 3. Triton-Ascend — Huawei's official fork
 **Triton-Ascend** <sup>[[12]](#ref-12)</sup> — Huawei's own port of Triton to Ascend. Active development at gitcode.com/Ascend/triton-ascend.
-
-### 4. Performance ceiling
-- **Gluon** shows that exceeding Triton requires **warp/wave-level control** <sup>[[8]](#ref-8)</sup>
-- **cuTile** demonstrates that **compiler automation** can deliver near-native with minimal code <sup>[[4]](#ref-4)</sup>
-- **Helion** proves that **PyTorch-level abstraction + autotuning** can beat hand-written Triton (1.85x on H100 GEMM) <sup>[[5]](#ref-5)</sup>
 
 ### 5. For 90% peak on Ascend:
 - Explicit **Cube Unit** (matrix) vs **Vector Unit** (elementwise) vs **Scalar Unit** management
 - Control over **double buffering** and **pipeline** between units
 - Awareness of **AI Core** topology (multiple cores, L0/L1/L2/HBM memory hierarchy)
-
-### 6. Syntax patterns worth borrowing
-| Pattern | Source | Why it matters |
-|---------|--------|----------------|
-| `tile` loop as core primitive | Helion <sup>[[5]](#ref-5)</sup>, TileLang <sup>[[2]](#ref-2)</sup> | Intuitive, minimal code |
-| Automatic scheduling + autotuning | Helion <sup>[[5]](#ref-5)</sup>, cuTile <sup>[[4]](#ref-4)</sup> | Key to simplicity |
-| Explicit memory hints | Pallas <sup>[[3]](#ref-3)</sup>, Gluon <sup>[[6]](#ref-6)</sup> | Required for 90% peak |
-| PyTorch-compatible syntax | Helion <sup>[[5]](#ref-5)</sup> | Low barrier to entry |
-| Warp/wave-level escape hatch | Gluon <sup>[[6]](#ref-6)</sup> | For edge cases when auto isn't enough |
-
 ---
 
 ## References
