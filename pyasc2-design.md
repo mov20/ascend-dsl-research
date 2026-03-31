@@ -159,6 +159,71 @@ for (int i = 0; i < num_tiles; i++) {
 
 ### 3.2 Triton
 
+#### Sync Insertion
+
+No sync primitives are exposed to the user. The TritonGPU IR lowering pass inserts async copy
+wait groups and shared memory barriers automatically, based on data flow analysis. <sup>[[10]](#ref-10)</sup>
+
+```python
+@triton.jit
+def add_kernel(X, Y, Z, N, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(X + offs)   # no barrier needed — compiler inserts it
+    y = tl.load(Y + offs)
+    tl.store(Z + offs, x + y)
+```
+
+**Conclusion**: Sync is fully automated. The user cannot and does not insert barriers manually.
+
+#### Ping-Pong
+
+The user writes a plain loop. The compiler's software pipelining pass automatically reorders
+instructions across iteration boundaries — issuing async loads for iteration K+N-1 while
+computing iteration K. Pipeline depth is controlled by a single `num_stages` hint. <sup>[[10]](#ref-10)</sup>
+
+```python
+@triton.jit
+def matmul_kernel(A, B, C, M, N, K,
+                  BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+                  BLOCK_K: tl.constexpr, num_stages: tl.constexpr):
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in tl.range(0, K, BLOCK_K, num_stages=num_stages):  # compiler pipelines this loop
+        a = tl.load(...)
+        b = tl.load(...)
+        acc += tl.dot(a, b)
+    tl.store(...)
+```
+
+**Conclusion**: Loop restructuring and barrier insertion are fully automated. `num_stages` is a
+user-facing tuning parameter — in practice set via autotuning, not manually.
+
+#### UB Memory Allocation and Reuse
+
+Shared memory (GPU equivalent of Ascend UB) is managed entirely by the compiler. No user-visible
+allocation calls exist. If the total shared memory footprint exceeds hardware limits, Triton raises
+a compile-time error — unlike AscendC which silently corrupts memory at runtime.
+
+Triton handles shared memory allocation through two separate mechanisms:
+
+**1. Encoding assignment** — decides *what* goes to shared memory:
+- **Pure elementwise ops** (add, mul, relu) — encoding passes through unchanged
+  (`SameOperandsAndResultEncoding` trait); tensors stay in registers. No shared memory allocated.
+- **Reductions** (softmax, sum, max) — `ReduceDataDuplication` pass assigns `SwizzledSharedEncodingAttr`
+  to reduction intermediates, inserting `LocalAllocOp` for shared memory staging. <sup>[[12]](#ref-12)</sup>
+- **Matrix ops** (`tl.dot`) — `BlockedToMMA` pass converts operand encodings from `Blocked` to MMA
+  shared memory encoding, inserting layout conversion ops automatically. <sup>[[13]](#ref-13)</sup>
+
+**2. Liveness analysis** — decides *where* in shared memory each buffer lives:
+`AllocationAnalysis` class in `Allocation.cpp` runs three phases: <sup>[[11]](#ref-11)</sup>
+- `getValuesAndSizes()` — collects all shared memory values and their sizes
+- `resolveLiveness()` — computes live ranges via MLIR standard liveness analysis
+- `computeOffsets()` — assigns offsets using interference graph + first-fit graph coloring,
+  reusing freed regions for non-overlapping buffers
+
+**Conclusion**: The user writes the same code regardless of whether shared memory is needed.
+Encoding assignment and liveness-based reuse are fully automated by the compiler.
+Unlike AscendC, fit within hardware limits is validated at compile time.
+
 ### 3.3 cuTile
 
 ### 3.4 TileLang-Ascend
@@ -184,3 +249,7 @@ for (int i = 0; i < num_tiles; i++) {
 | 7 | PTO A5 Flash Attention kernel | https://github.com/hengliao1972/pto-isa/blob/main/kernels/manual/a5/flash_atten/README.md |
 | 8 | PTO engram SIMT kernel (A5) | https://github.com/hengliao1972/pto-isa/blob/main/kernels/manual/a5/engram_simt/engram-simt_kernel.cpp |
 | 9 | Ascend 910B architecture overview | https://arxiv.org/html/2505.15112v1 |
+| 10 | Triton matmul tutorial — pipelined kernel with no user-written barriers | https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html |
+| 11 | Triton shared memory allocation — `AllocationAnalysis` | https://github.com/triton-lang/triton/blob/main/lib/Analysis/Allocation.cpp |
+| 12 | Triton encoding assignment for reductions — `ReduceDataDuplication` | https://github.com/triton-lang/triton/blob/main/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp |
+| 13 | Triton encoding assignment for dot/matmul — `BlockedToMMA` | https://github.com/triton-lang/triton/blob/main/lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp |
