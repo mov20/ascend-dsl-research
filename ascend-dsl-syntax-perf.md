@@ -54,3 +54,84 @@
 | 🟡 **High** | Data loading syntax | Helion (PyTorch indexing) | Simplicity: `x[tile_m, tile_k]` > `tl.load(ptr)` |
 | 🟢 **Medium** | Kernel definition | All ~equivalent | Decorator-based (`@kernel`) |
 | 🟢 **Medium** | Fusion | Helion (TorchInductor) | Graph-level — phase 2 |
+
+---
+
+## Key Challenges for Ascend NPU
+
+Ascend 910B AI Core consists of two types of compute cores:
+- **AIC** (AI Core / Cube) — matrix/tensor operations
+- **AIV** (AI Vector) — vector operations; ratio is 1 AIC : 2 AIV on 910B
+
+Each core (AIC and AIV) has its own: **MTE** (Memory Transfer Engine, DMA),
+**Scalar Unit** (control flow, address calculation, instruction dispatch), and
+**Compute Unit** (Cube or Vector). AIC and AIV have no direct interconnect —
+data exchange goes through L2 / Global Memory.
+
+Three challenges arise from this architecture that GPU DSLs don't face, or solve differently.
+
+---
+
+### Challenge 1 — Sync Insertion Between MTE and Compute Unit
+
+Within each core, MTE (data load) and Compute (execution) run in parallel.
+Explicit `set_flag`/`wait_flag` barriers must be inserted between them.
+Wrong or missing barriers cause silent data hazards; extra barriers cause stalls.
+
+| DSL | How sync is handled | User-visible? |
+|-----|-------------------|---------------|
+| **Triton** | `__syncthreads` auto-inserted at shared mem read/write boundaries | No |
+| **TileLang GPU** | `T.Pipelined` handles barriers between stages | No |
+| **TileLang-Ascend** | `T.set_cross_flag()` / `T.wait_cross_flag()` — explicit per stage | **Yes — manual** |
+| **Pallas (TPU)** | XLA/Mosaic inserts barriers automatically | No |
+| **Helion** | Inherits Triton backend — fully implicit | No |
+| **cuTile** | Fully automatic (compiler-scheduled) | No |
+
+**Key insight:** Every GPU DSL hides sync from the user via compiler analysis of
+data flow. TileLang-Ascend is the only exception — it exposes hardware barriers
+directly. The open question: can producer/consumer relationships on Ascend be
+inferred from tile data flow alone, without user annotations?
+
+---
+
+### Challenge 2 — Double Buffering (Ping-Pong)
+
+To hide HBM→UB load latency, MTE loads for tile N+1 must overlap with Compute
+on tile N. This requires splitting the loop body into a preload phase and a
+compute+async-load phase — and inserting correct sync barriers between them.
+
+| DSL | Double buffer support | Syntax | Automation level |
+|-----|-----------------------|--------|-----------------|
+| **Triton** | Partial | `tl.async_copy` + manual barrier | Semi-manual |
+| **TileLang GPU** | ✅ | `T.Pipelined(K, num_stages=2)` | Declarative |
+| **TileLang-Ascend** | Partial | `T.Pipelined(K, num_stages=2)` (limited on Ascend) | Partial |
+| **Pallas (TPU)** | ✅ | `pl.prefetch_scoped(ref, ...)` | Semi-manual |
+| **Helion** | Compiler best-effort | None — fully implicit | Auto via Triton |
+| **cuTile** | ✅ | None — fully auto | Fully automatic |
+
+**Key insight:** TileLang's `T.Pipelined(num_stages=N)` is the most portable
+declarative model. cuTile/Helion go further — fully automatic. On Ascend, ping-pong
+is harder than on GPU because it must interact with sync insertion: the compiler
+must simultaneously split the loop, hoist loads, and insert barriers correctly.
+
+---
+
+### Challenge 3 — On-Chip Memory (UB) Allocation and Reuse
+
+Each AIC and AIV core has its own UB (Unified Buffer) — 256 KB on 910B.
+After loop unrolling, many tile values can be live simultaneously, potentially
+exhausting UB. Reuse requires liveness analysis across unrolled iterations.
+
+| DSL | On-chip mem model | Liveness analysis | Region reuse |
+|-----|------------------|------------------|--------------|
+| **Triton** | Fully implicit | Yes (MLIR) | Yes |
+| **TileLang GPU** | `T.alloc_shared()` explicit; compiler infers lifetime | Yes | Partial |
+| **TileLang-Ascend** | `alloc_ub()` explicit; no compiler reuse | No — user manages | ❌ Manual |
+| **Pallas (TPU)** | `BlockSpec` declares sizes; XLA assigns regions | Yes | Yes |
+| **Helion** | Fully implicit via Triton | Yes | Yes |
+| **cuTile** | Fully implicit (Tile IR) | Yes | Yes |
+
+**Key insight:** Triton, Helion, cuTile rely on compiler liveness analysis to pack
+tiles into shared mem — user only declares tile shapes. TileLang-Ascend is the
+outlier: fully manual, no reuse. For a new Ascend DSL, the implicit model is
+the right target: user declares tile shapes; compiler handles UB layout.
