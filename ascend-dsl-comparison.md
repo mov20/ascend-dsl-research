@@ -33,11 +33,10 @@
 ### 1. Trend: Tile-based abstractions dominate
 TileLang, cuTile, Helion, Pallas — all use tile as the core primitive. Natural fit for accelerator memory hierarchies (HBM → L2 → SRAM/shared → registers).
 
-
-### 3. Triton-Ascend — Huawei's official fork
+### 2. Triton-Ascend — Huawei's official fork
 **Triton-Ascend** <sup>[[12]](#ref-12)</sup> — Huawei's own port of Triton to Ascend. Active development at gitcode.com/Ascend/triton-ascend.
 
-### 5. For 90% peak on Ascend:
+### 3. For 90% peak on Ascend:
 - Explicit **Cube Unit** (matrix) vs **Vector Unit** (elementwise) vs **Scalar Unit** management
 - Control over **double buffering** and **pipeline** between units
 - Awareness of **AI Core** topology (multiple cores, L0/L1/L2/HBM memory hierarchy)
