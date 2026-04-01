@@ -295,6 +295,76 @@ cores — is fully compiler-managed. No user-visible allocation API exists.
 
 ### 3.4 TileLang-Ascend
 
+#### Sync Insertion
+
+TileLang-Ascend offers two modes — manual and automatic.
+
+**Manual:** user writes explicit primitives — `T.set_flag()`, `T.wait_flag()`,
+`T.set_cross_flag()` / `T.wait_cross_flag()` (for Cube↔Vector sync),
+`T.pipe_barrier()`, `T.barrier_all()`. <sup>[[21]](#ref-21)</sup>
+
+**Automatic:** enabled via pass config: <sup>[[22]](#ref-22)</sup>
+```python
+pass_configs = {
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
+    tilelang.PassConfigKey.TL_ASCEND_AUTO_CV_SYNC: True,
+}
+```
+The `AscendSyncInsert` pass analyzes producer-consumer data dependencies,
+separates Cube/Vector code regions (`CombineCV` pass), and inserts fine-grained
+flag operations at synchronization points. <sup>[[23]](#ref-23)</sup>
+
+**Known limitation:** with double buffering + auto sync, the compiler currently
+generates conservative `PipeBarrier<PIPE_ALL>` instead of fine-grained flags,
+which may hurt performance. <sup>[[24]](#ref-24)</sup>
+
+**Conclusion**: Hybrid model — auto sync available but not yet mature. Manual
+sync remains the practical default for performance-critical kernels.
+
+#### Ping-Pong
+
+`T.Pipelined(range, num_stages=N)` is the primary API. The user sets pipeline
+depth and marks which loop to pipeline — necessary in nested loops where
+different levels produce different overlap behavior. The `CrossCorePipeline` pass
+extends buffer dimensions and restructures the loop. <sup>[[21]](#ref-21)</sup>
+
+```python
+for m in T.range(M // block_M):
+    for k in T.Pipelined(K // block_K, num_stages=2):  # only this loop is pipelined
+        T.copy(A_global, A_L1)
+        T.gemm_v0(A_L1, B_L1, C_L0C)
+```
+
+Similar to Triton's `num_stages` — user-facing tuning parameter, not fully automated.
+Combined with the auto sync limitation (Issue #110), pipelined kernels currently
+get conservative `PipeBarrier<PIPE_ALL>` instead of fine-grained flags. <sup>[[24]](#ref-24)</sup>
+
+**Conclusion**: Loop pipelining is compiler-supported via `T.Pipelined`, but
+pipeline depth and loop selection are user-chosen. Barrier insertion is still conservative.
+
+#### UB Memory Allocation and Reuse
+
+User explicitly allocates buffers at each memory hierarchy level: <sup>[[21]](#ref-21)</sup>
+
+```python
+q_l1     = T.alloc_L1([block_M, dim], dtype)        # L1 buffer
+acc_l0c  = T.alloc_L0C([block_M, block_N], dtype)   # L0C (register-like SRAM)
+softmax  = T.alloc_ub([block_M // 2], dtype)         # UB (256 KB limit)
+```
+
+**Default mode:** no liveness analysis. User must manually assign UB offsets
+via `T.annotate_address(buffer, offset)` — similar to AscendC's manual planning.
+No compile-time validation; exceeding 256 KB causes silent corruption.
+
+**Opt-in mode:** `TL_ASCEND_MEMORY_PLANNING=True` enables the `AscendMemoryPlanning`
+pass — liveness analysis, interference graph, first-fit coloring for buffer reuse.
+Eliminates manual `T.annotate_address()`. Validates UB fit at compile time. <sup>[[25]](#ref-25)</sup>
+
+L1 and L0A/B/C allocation has no compile-time limit checking in either mode.
+
+**Conclusion**: Memory hierarchy placement is always user-chosen (unlike Triton).
+Buffer reuse and validation are available but opt-in — not yet the default.
+
 ### 3.5 Triton-Ascend
 
 ### 3.6 PyAsc v3
@@ -327,3 +397,8 @@ cores — is fully compiler-managed. No user-visible allocation API exists.
 | 18 | TiledAttention — SDPA in cuTile (arXiv:2603.01960) | https://arxiv.org/abs/2603.01960 |
 | 19 | CuTile on Blackwell — compiler moat analysis (TMEM, mbarrier details) | https://patricktoulme.substack.com/p/cutile-on-blackwell-nvidias-compiler |
 | 20 | tcgen05 for dummies — TMEM allocation, operand placement | https://gau-nernst.github.io/tcgen05/ |
+| 21 | TileLang-Ascend repo — examples and sync primitives | https://github.com/tile-ai/tilelang-ascend |
+| 22 | TileLang-Ascend auto sync config (Issue #98) | https://github.com/tile-ai/tilelang-ascend/issues/98 |
+| 23 | TileLang-Ascend CombineCV + AscendSyncInsert passes | https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/src/transform/ascend_combinecv.cc |
+| 24 | TileLang-Ascend double buffer sync issue (#110) | https://github.com/tile-ai/tilelang-ascend/issues/110 |
+| 25 | TileLang-Ascend roadmap — memory planning, autotuner (Issue #3) | https://github.com/tile-ai/tilelang-ascend/issues/3 |
