@@ -226,6 +226,73 @@ Unlike AscendC, fit within hardware limits is validated at compile time.
 
 ### 3.3 cuTile
 
+#### Sync Insertion
+
+No sync primitives are exposed to the user. The TileIR compiler automatically injects all
+necessary barriers during code generation. Explicit synchronization or communication within
+a block is not permitted by design — this is a fundamental constraint of the cuTile model. <sup>[[14]](#ref-14)</sup>
+
+This includes TMA (Tensor Memory Accelerator) async operations: the `convert-tileaa-to-tileas`
+pass converts `tileaa.tiled_load` into async loads, and the `convert-pipeline-to-nvvm` pass
+generates the corresponding `nvvm.mbarrier.*` intrinsics for memory-vs-compute
+synchronization. <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
+
+```python
+@ct.kernel
+def vector_add(a, b, c, tile_size: ct.Constant[int]):
+    pid = ct.bid(0)
+    a_tile = ct.load(a, index=(pid,), shape=(tile_size,))
+    b_tile = ct.load(b, index=(pid,), shape=(tile_size,))
+    result = a_tile + b_tile
+    ct.store(c, index=(pid,), tile=result)
+```
+
+An 86-line Python cuTile kernel expands to ~1,900 lines of PTX with 20 barrier objects —
+none written by the developer. <sup>[[15]](#ref-15)</sup>
+
+**Conclusion**: Sync is fully automated and not even expressible by the user.
+cuTile is the most restrictive model — no escape hatch for manual barriers.
+
+#### Ping-Pong
+
+The user writes a simple loop. The TileIR compiler transforms it into a pipelined loop
+through three passes: <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
+1. `convert-tileaa-to-tileas` — converts tiled loads into async loads with pipeline ops
+2. `tileas-materialize-async` — creates the async pipeline structure with multi-buffering
+3. `convert-pipeline-to-nvvm` — lowers to NVVM barrier intrinsics (`nvvm.mbarrier.*`)
+
+The result is a three-phase loop — prologue (pre-load N iterations), steady-state
+(overlap load K+N with compute K), and epilogue (drain remaining computes).
+
+Unlike Triton, there is no user-facing `num_stages` parameter — the compiler determines
+pipeline depth automatically.
+
+Performance evidence: GEMM achieves ~90% of cuBLAS on Blackwell with zero user-written
+pipelining. <sup>[[17]](#ref-17)</sup> Attention kernels are still a work in progress —
+TiledAttention research implementation reaches 0.63x vs fused PyTorch SDPA. <sup>[[18]](#ref-18)</sup>
+
+**Conclusion**: Ping-pong is fully automated. No loop restructuring, no buffer management,
+no pipeline depth hint from the user. Strong results for GEMM; attention still maturing.
+
+#### UB Memory Allocation and Reuse
+
+**SIMT kernels (shared memory):** The compiler decides what goes to shared memory and
+allocates it automatically. The user has no shared memory API — no `__shared__` declarations,
+no size hints. In practice, the compiler allocated 180 KB of shared memory for an 86-line
+MOE kernel without any user input. <sup>[[15]](#ref-15) [[19]](#ref-19)</sup>
+
+**Tensor core kernels on Blackwell (TMEM):** SM100 introduces TMEM — 256 KB per SM,
+dedicated to tensor cores, separate from shared memory. Operand A lives in TMEM or SMEM,
+operand B in SMEM, accumulator in TMEM exclusively. Allocation is dynamic via
+`tcgen05.alloc` (32-column minimum, power-of-2 granularity). <sup>[[20]](#ref-20)</sup>
+
+cuTile handles TMEM automatically including contention handling — retry with 100ns backoff
+when allocation fails. On Hopper, matrix operands competed for register file space;
+on Blackwell, TMEM decouples tensor cores from CUDA cores entirely. <sup>[[19]](#ref-19)</sup>
+
+**Conclusion**: All on-chip memory allocation — shared memory for SIMT, TMEM for tensor
+cores — is fully compiler-managed. No user-visible allocation API exists.
+
 ### 3.4 TileLang-Ascend
 
 ### 3.5 Triton-Ascend
@@ -253,3 +320,10 @@ Unlike AscendC, fit within hardware limits is validated at compile time.
 | 11 | Triton shared memory allocation — `AllocationAnalysis` | https://github.com/triton-lang/triton/blob/main/lib/Analysis/Allocation.cpp |
 | 12 | Triton encoding assignment for reductions — `ReduceDataDuplication` | https://github.com/triton-lang/triton/blob/main/lib/Dialect/TritonGPU/Transforms/ReduceDataDuplication.cpp |
 | 13 | Triton encoding assignment for dot/matmul — `BlockedToMMA` | https://github.com/triton-lang/triton/blob/main/lib/Dialect/TritonGPU/Transforms/AccelerateMatmul.cpp |
+| 14 | cuTile execution model — no intra-block sync | https://docs.nvidia.com/cuda/cutile-python/execution.html |
+| 15 | TileIR internals — from cuTile to MLIR/LLVM to SASS | https://maknee.github.io/blog/2026/NVIDIA-TileIR-Internals-from-CuTile-to-MLIR-LLVM-to-SASS/ |
+| 16 | TileIR source code (NVIDIA, open-source) | https://github.com/NVIDIA/cuda-tile |
+| 17 | NVIDIA blog — high-performance matrix multiply in cuTile | https://developer.nvidia.com/blog/how-to-write-high-performance-matrix-multiply-in-nvidia-cuda-tile |
+| 18 | TiledAttention — SDPA in cuTile (arXiv:2603.01960) | https://arxiv.org/abs/2603.01960 |
+| 19 | CuTile on Blackwell — compiler moat analysis (TMEM, mbarrier details) | https://patricktoulme.substack.com/p/cutile-on-blackwell-nvidias-compiler |
+| 20 | tcgen05 for dummies — TMEM allocation, operand placement | https://gau-nernst.github.io/tcgen05/ |
