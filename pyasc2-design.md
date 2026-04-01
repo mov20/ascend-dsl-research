@@ -1,8 +1,12 @@
 # PyAsc2 API Design
 
+> TODO: put TOC with swction hyperlinks here 
+
 ## 1. Requirements
 
+(sorted by priority)
 - Express kernels in terms of **tensors** (ND-arrays in global memory) and **tiles** (fixed-shape chunks in on-chip memory). Buffer addresses, TPipe/TQue lifecycles, and synchronization barriers are not exposed to the user.
+- Performance pyAsc2 code is 90% of optimized AscendC operators
 - Provide NumPy-like syntax for arithmetic, reductions, shape manipulation, masking, and atomics.
 - **[Main engineering challenge]** Automate synchronization insertion, UB memory allocation, and ping-pong optimization through compiler passes and compiler hints.
 - Target hardware: Ascend 910B/C, 950.
@@ -38,7 +42,7 @@ validated at compile time.
 
 ### 2.4 Hardware Differences: 910B/C vs 950
 
-> *Partial information — to be updated as more documentation becomes available.*
+> *TODO: Partial information — to be updated as more documentation becomes available.*
 
 **910C** — two 910B dies in one package. Same Da Vinci architecture, AIC/AIV model unchanged.
 
@@ -52,7 +56,8 @@ validated at compile time.
 - **Memory access granularity**: 512 bytes → 128 bytes.
 - **New data formats**: MXFP4, MXFP8, HiF8 (in addition to FP16/BF16/INT8).
 - **Pipeline tuning**: different buffer allocation strategy and pipeline depth
-  vs. A2/A3 (confirmed in PTO FA kernel for A5).
+  vs. A2/A3 (confirmed in PTO FA kernel for A5). > *TODO: Partial information — to be updated as more documentation becomes available.*
+
 - **Sync model**: `set_flag`/`wait_flag` between PIPE_MTE2 and PIPE_V are still
   explicit even on A5 (confirmed in PTO engram kernel source).
 
@@ -100,7 +105,7 @@ Source: Ascend C Operator Development Guide, CANN 8.0 https://www.hiascend.com/d
 
 Missing or misplaced EnQue/DeQue / SetEventId/WaitEventId causes silent data hazards. AscendC does not insert any barriers automatically.
 
-**Conclusion**: AscendC doesn't solve the challenge — it exposes it. The user is responsible for every barrier manually. This is a source of bugs and boilerplate.
+**Conclusion**: AscendC doesn't solve the challenge — it exposes it. The user is responsible for every barrier manually. This is a source of bugs.
 
 #### Ping-pong
 
@@ -124,11 +129,7 @@ for (int i = 0; i < num_tiles; i++) {
     inQueue.FreeTensor(cur);
 }
 ```
-Depth 2 = two slots in UB. While Vector works on ping, MTE2 loads into pong. But:
-
-User chooses queue depth manually
-User structures the loop manually to achieve overlap
-Compiler doesn't help
+Depth 2 = two slots in UB. While Vector works on ping, MTE2 loads into pong. But: User chooses queue depth manually; User structures the loop manually to achieve overlap; Compiler doesn't help
 
 **Conclusion**: AscendC supports ping-pong, but requires manual orchestration. No automatic loop body partitioning.
 
@@ -237,6 +238,8 @@ pass converts `tileaa.tiled_load` into async loads, and the `convert-pipeline-to
 generates the corresponding `nvvm.mbarrier.*` intrinsics for memory-vs-compute
 synchronization. <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
 
+
+> TODO: Exmplanation above is about MMA. Better here to insert GEMM example (not vecadd)
 ```python
 @ct.kernel
 def vector_add(a, b, c, tile_size: ct.Constant[int]):
@@ -250,6 +253,7 @@ def vector_add(a, b, c, tile_size: ct.Constant[int]):
 An 86-line Python cuTile kernel expands to ~1,900 lines of PTX with 20 barrier objects —
 none written by the developer. <sup>[[15]](#ref-15)</sup>
 
+> TODO: if possible to get references - insert perf numbers B200 GEMM (matmul kernels)
 **Conclusion**: Sync is fully automated and not even expressible by the user.
 cuTile is the most restrictive model — no escape hatch for manual barriers.
 
@@ -257,7 +261,10 @@ cuTile is the most restrictive model — no escape hatch for manual barriers.
 
 The user writes a simple loop. The TileIR compiler transforms it into a pipelined loop
 through three passes: <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
+
+
 1. `convert-tileaa-to-tileas` — converts tiled loads into async loads with pipeline ops
+> TODO: clarify if this "tiled loads are about MMA or vector ops
 2. `tileas-materialize-async` — creates the async pipeline structure with multi-buffering
 3. `convert-pipeline-to-nvvm` — lowers to NVVM barrier intrinsics (`nvvm.mbarrier.*`)
 
@@ -289,6 +296,7 @@ operand B in SMEM, accumulator in TMEM exclusively. Allocation is dynamic via
 cuTile handles TMEM automatically including contention handling — retry with 100ns backoff
 when allocation fails. On Hopper, matrix operands competed for register file space;
 on Blackwell, TMEM decouples tensor cores from CUDA cores entirely. <sup>[[19]](#ref-19)</sup>
+> TODO: about not clear. what is 100us? what is matrix operands "competed"?
 
 **Conclusion**: All on-chip memory allocation — shared memory for SIMT, TMEM for tensor
 cores — is fully compiler-managed. No user-visible allocation API exists.
@@ -364,6 +372,8 @@ L1 and L0A/B/C allocation has no compile-time limit checking in either mode.
 
 **Conclusion**: Memory hierarchy placement is always user-chosen (unlike Triton).
 Buffer reuse and validation are available but opt-in — not yet the default.
+> TODO: Clarify why Buffer reuse and validation is not yet default option. 
+
 
 ### 3.5 Triton-Ascend
 
