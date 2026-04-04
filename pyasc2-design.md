@@ -377,6 +377,110 @@ Buffer reuse and validation are available but opt-in — not yet the default.
 
 ### 3.5 Triton-Ascend
 
+Triton-Ascend is Huawei's fork of Triton for Ascend NPU. From the user's perspective —
+standard Triton Python API. Internally, a completely different compilation path. <sup>[[28]](#ref-28)</sup>
+
+Compilation pipeline — does not use TTGIR (GPU-specific), stays at TTIR: <sup>[[28]](#ref-28) [[29]](#ref-29)</sup>
+```
+TTIR → triton-to-linalg → Linalg IR → HFusion → HIVM
+  → HIVMToStandard (HIVM ops → CCE device library calls, e.g. vadd_2d_f16)
+  → LLVM IR → kernel.o (linked with CCE libs, loaded via ascendcl)
+```
+
+HIVM (Hybrid ISA Virtual Machine) is the core dialect of AscendNPU-IR
+(open-source: `Ascend/AscendNPU-IR` on gitcode.com) — abstracts Ascend computation,
+data movement, and synchronization at tile level. Built on standard MLIR dialects:
+`Linalg`, `MemRef`, `SCF`, `Bufferization`, `Tensor`. <sup>[[29]](#ref-29)</sup>
+
+Confirmed working on Ascend (with `torch_npu`): matmul (`tl.dot`), fused softmax,
+layer norm, fused attention (Flash Attention v2), vector add. <sup>[[27]](#ref-27)</sup>
+
+#### Sync Insertion
+
+Automated — same as standard Triton, no explicit barriers from the user. <sup>[[26]](#ref-26)</sup>
+
+Internally handled by HIVM passes (`bishengir/lib/Dialect/HIVM/Transforms/`): <sup>[[30]](#ref-30)</sup>
+- `InjectSync/` — intra-core sync: inserts `set_flag`/`wait_flag` between MTE and
+  compute pipelines based on data dependency analysis
+- `GraphSyncSolver/` — graph-based solver for optimal barrier placement,
+  minimizing redundant barriers while preserving correctness
+- `InjectBlockSync.cpp` — inter-block sync for cross-core data dependencies
+- `SplitMixKernel.cpp` — splits CV-fused kernels into separate AIC (cube) and
+  AIV (vector) functions, inserting cross-core sync at data exchange points
+
+Confirmed by lit tests: `inject-sync.mlir`, `sync-solver.mlir`,
+`sync-solver-cross-core.mlir`, `inject-block-sync.mlir`. <sup>[[30]](#ref-30)</sup>
+
+Key Ascend-specific adaptation at user level: grid is fixed to the number of
+physical cores (not thousands of blocks like GPU). For large data, two-level
+tiling with `BLOCK_SIZE_SUB` — an inner loop to fit 192 KB UB: <sup>[[26]](#ref-26)</sup>
+
+```python
+@triton.jit
+def kernel(inp, out, N, BLOCK_SIZE: tl.constexpr, BLOCK_SIZE_SUB: tl.constexpr):
+    pid = tl.program_id(0)
+    NUM_CORE = tl.num_programs(0)
+    num_blocks = tl.cdiv(N, BLOCK_SIZE)
+    for block_idx in range(pid, num_blocks, NUM_CORE):  # round-robin across cores
+        base = block_idx * BLOCK_SIZE
+        for sub_idx in range(BLOCK_SIZE // BLOCK_SIZE_SUB):  # fit UB
+            offs = base + sub_idx * BLOCK_SIZE_SUB + tl.arange(0, BLOCK_SIZE_SUB)
+            x = tl.load(inp + offs, mask=offs < N)
+            tl.store(out + offs, x, mask=offs < N)
+```
+
+**What works as-is:** small-scale kernels where one block fits in UB.
+**What requires adaptation:** large data (add BLOCK_SIZE_SUB loop),
+grid sizing (fix to physical core count), i32/i64 comparisons (cast to float32),
+tail axis alignment (32-byte for vector, 512-byte for CV ops). <sup>[[26]](#ref-26)</sup>
+
+**Conclusion**: Sync is automated. Standard Triton kernels can run on Ascend
+for small-scale ops; large-scale kernels need two-level tiling and grid adaptation.
+
+#### Ping-Pong
+
+multiBuffer is enabled by default — no user annotation required. <sup>[[26]](#ref-26)</sup>
+
+Implemented by HIVM passes (`bishengir/lib/Dialect/HIVM/Transforms/`): <sup>[[30]](#ref-30)</sup>
+- `EnableMultiBuffer.cpp` — enables double buffering for eligible allocations
+- `MarkMultiBuffer.cpp` — marks which buffers should be multi-buffered based
+  on access patterns and loop structure
+- `CVPipelining.cpp` — reorders cube and vector code to enable CV core pipeline
+  parallelism (load on one core while other computes)
+- `OptMemPlanForPipeline.cpp` — adjusts memory plan to accommodate pipelined execution
+
+The `BLOCK_SIZE_SUB` inner loop creates the pipelining opportunity: each sub-block
+iteration is a natural stage for overlap. After doublebuffer is enabled, UB capacity
+is halved (192 KB → 96 KB effective). <sup>[[26]](#ref-26)</sup>
+
+Confirmed by lit tests: `enable-multi-buffer.mlir`, `mark-multi-buffer.mlir`,
+`cv-pipelining.mlir`. <sup>[[30]](#ref-30)</sup>
+
+**Conclusion**: Ping-pong is fully automated via multiBuffer (on by default).
+No `num_stages` hint like Triton GPU, no `T.Pipelined` like TileLang-Ascend.
+
+#### UB Memory Allocation and Reuse
+
+UB allocation is handled by the `hivm-plan-memory` pass. Two-phase approach: <sup>[[30]](#ref-30)</sup>
+1. **`MemLivenessAnalysis`** — uses standard MLIR `Liveness` analysis, extended with
+   Ascend-specific buffer aliasing, multi-buffer tracking, and gen/kill maps
+2. **`MemPlan`** — assigns UB offsets based on liveness, reuses non-overlapping buffers,
+   handles multi-buffer (ping-pong) reuse scenarios
+
+Hardware limits hardcoded in `PlanMemory.cpp`: UB = 192 KB, L1 = 512 KB, L0C = 128 KB.
+Overflow caught at compile time. <sup>[[30]](#ref-30)</sup>
+
+Additional HIVM passes (`bishengir/lib/Dialect/HIVM/Transforms/`): <sup>[[30]](#ref-30)</sup>
+- `AutoInferBufferSize.cpp` — automatic buffer size inference
+- `SetBufferSize.cpp` — buffer size assignment after inference
+
+Confirmed by lit tests: `plan-memory.mlir`, `hivm-auto-infer-buffer-size.mlir`,
+`hivm-set-buffer-size.mlir`. <sup>[[30]](#ref-30)</sup>
+
+**Conclusion**: UB allocation is fully automated — standard MLIR liveness analysis
+extended with Ascend-specific buffer reuse. GPU Triton's `AllocationAnalysis` is not used;
+the entire path is Ascend-specific via HIVM dialect.
+
 ### 3.6 PyAsc v3
 
 ## 4. Key Design Decisions
@@ -412,3 +516,8 @@ Buffer reuse and validation are available but opt-in — not yet the default.
 | 23 | TileLang-Ascend CombineCV + AscendSyncInsert passes | https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/src/transform/ascend_combinecv.cc |
 | 24 | TileLang-Ascend double buffer sync issue (#110) | https://github.com/tile-ai/tilelang-ascend/issues/110 |
 | 25 | TileLang-Ascend roadmap — memory planning, autotuner (Issue #3) | https://github.com/tile-ai/tilelang-ascend/issues/3 |
+| 26 | Triton-Ascend programming guide (gitcode.com primary repo) | https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/programming_guide.md |
+| 27 | Triton-Ascend examples — confirmed on Ascend with torch_npu | https://gitcode.com/Ascend/triton-ascend/tree/main/docs/en/examples |
+| 28 | Triton-Ascend architecture design and core features | https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/architecture_design_and_core_features.md |
+| 29 | AscendNPU-IR architecture — HIVM/HFusion/HACC dialect definitions | https://gitcode.com/Ascend/AscendNPU-IR/blob/main/docs/source/en/introduction/architecture.md |
+| 30 | AscendNPU-IR PlanMemory pass — liveness-based UB allocation | https://gitcode.com/Ascend/AscendNPU-IR/blob/main/bishengir/lib/Dialect/HIVM/Transforms/PlanMemory.cpp |
