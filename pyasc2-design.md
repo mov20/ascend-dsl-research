@@ -481,7 +481,71 @@ Confirmed by lit tests: `plan-memory.mlir`, `hivm-auto-infer-buffer-size.mlir`,
 extended with Ascend-specific buffer reuse. GPU Triton's `AllocationAnalysis` is not used;
 the entire path is Ascend-specific via HIVM dialect.
 
-### 3.6 PyAsc v3
+### 3.6 PyPTO
+
+#### 3.6.1 PyPTO-main
+
+PyPTO (Parallel Tensor/Tile Operation) is a tile-based programming framework for
+Ascend NPU. The user writes tensor-level code; the compiler handles tiling, memory,
+sync, and pipelining automatically. <sup>[[31]](#ref-31)</sup>
+
+Pipeline (C++ framework, not MLIR): <sup>[[31]](#ref-31)</sup>
+```
+Python (@pypto.frontend.jit) → Tensor Graph → Tile Graph → Block Graph
+  → Execution Graph → PTO Virtual Instructions → CANN Backend → NPU binary
+```
+
+User-facing code — no sync, no memory management, no barriers:
+```python
+@pypto.frontend.jit
+def matmul_kernel(a: pypto.Tensor([], pypto.DT_FP32),
+                  b: pypto.Tensor([], pypto.DT_FP32),
+                  out: pypto.Tensor([], pypto.DT_FP32)):
+    pypto.set_cube_tile_shapes([32, 32], [64, 64], [64, 64])
+    out[:] = pypto.matmul(a, b, pypto.DT_FP32)
+```
+
+#### Sync Insertion
+
+Fully automated. The `InsertSync` pass at Block Graph level performs: <sup>[[32]](#ref-32)</sup>
+- RAW/WAW/WAR data dependency analysis using interval trees (`DataDependencySearcher`)
+- Pipe-aware `set_flag`/`wait_flag` injection across all pipeline pairs
+  (AIC_MTE2, AIC_M, AIV_MTE2, AIV_V, AIV_MTE3, etc.)
+- Event ID allocation with deadlock detection and recovery
+- Cross-core sync for CV-fused kernels
+
+Post-optimization: `tune_sync_for_vf` relaxes unnecessary barriers
+for vector-fusion subgraphs. <sup>[[33]](#ref-33)</sup>
+
+**Conclusion**: User writes zero sync primitives. The compiler performs full
+pipeline-aware dependency analysis and barrier injection.
+
+#### Ping-Pong
+
+Automated at Tile Graph level. The `n_buffer_merge` pass doubles buffers
+for overlapping data transfer and computation. <sup>[[34]](#ref-34)</sup>
+Combined with `schedule_ooo` (out-of-order scheduling) and `add_alloc` at
+Block Graph level for pipeline parallelism. <sup>[[35]](#ref-35)</sup>
+
+The user controls tile shapes via `pypto.set_vec_tile_shapes()` or
+`pypto.set_cube_tile_shapes()` — this indirectly determines buffer count
+and pipeline depth. No explicit `num_stages` or `T.Pipelined`.
+
+**Conclusion**: Ping-pong is fully automated. User only sets tile shapes.
+
+#### UB Memory Allocation and Reuse
+
+Multi-stage memory management across the compilation pipeline:
+- **Tile Graph**: `assign_memory_type` — decides which memory level each tile
+  uses (DDR, L1, L0A/B/C, UB) based on operation type <sup>[[36]](#ref-36)</sup>
+- **Block Graph**: `add_alloc` / `remove_alloc` — inserts buffer allocations <sup>[[35]](#ref-35)</sup>;
+  `memory_reuse/` contains liveness-based reuse passes including
+  `global_memory_reuse.cpp`, `merge_src_dst_buffer.cpp`, and connection matrix
+  analysis for non-overlapping buffer sharing <sup>[[37]](#ref-37)</sup>
+
+**Conclusion**: UB allocation is fully automated — memory space assignment,
+buffer allocation, and liveness-based reuse are all compiler-managed.
+No user-visible memory APIs.
 
 ## 4. Key Design Decisions
 
@@ -521,3 +585,10 @@ the entire path is Ascend-specific via HIVM dialect.
 | 28 | Triton-Ascend architecture design and core features | https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/architecture_design_and_core_features.md |
 | 29 | AscendNPU-IR architecture — HIVM/HFusion/HACC dialect definitions | https://gitcode.com/Ascend/AscendNPU-IR/blob/main/docs/source/en/introduction/architecture.md |
 | 30 | AscendNPU-IR PlanMemory pass — liveness-based UB allocation | https://gitcode.com/Ascend/AscendNPU-IR/blob/main/bishengir/lib/Dialect/HIVM/Transforms/PlanMemory.cpp |
+| 31 | PyPTO-main matmul example | https://gitcode.com/cann/pypto/blob/master/examples/01_beginner/compute/matmul_ops.py |
+| 32 | PyPTO InsertSync pass — RAW/WAW/WAR dependency analysis | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/insert_sync.cpp |
+| 33 | PyPTO tune_sync_for_vf — barrier relaxation for vector fusion | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/tune_sync_for_vf.cpp |
+| 34 | PyPTO n_buffer_merge — double buffering at Tile Graph level | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/tile_graph_pass/graph_partition/n_buffer_merge.cpp |
+| 35 | PyPTO add_alloc / schedule_ooo — Block Graph allocation and scheduling | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/schedule_ooo/add_alloc.cpp |
+| 36 | PyPTO assign_memory_type — memory space assignment at Tile Graph | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/tile_graph_pass/data_path/assign_memory_type.cpp |
+| 37 | PyPTO memory_reuse — liveness-based buffer reuse | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/memory_reuse/global_memory_reuse.cpp |
