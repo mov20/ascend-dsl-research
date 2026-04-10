@@ -547,6 +547,90 @@ Multi-stage memory management across the compilation pipeline:
 buffer allocation, and liveness-based reuse are all compiler-managed.
 No user-visible memory APIs.
 
+#### 3.6.2 PyPTOv3 (redesign)
+
+PyPTOv3 is a ground-up rewrite of PyPTO with a new IR system, new DSL, and
+multi-level abstraction. Active development at github.com/hw-native-sys/pypto.
+Targets 910B and 950. <sup>[[38]](#ref-38)</sup>
+
+Pipeline — custom C++ AST-based IR for passes, MLIR as output format: <sup>[[38]](#ref-38)</sup>
+```
+Python (@pl.program / @pl.function) → Custom C++ IR → SSA conversion
+  → passes (tensor→tile, memory, sync)
+  → PTO codegen → MLIR text (.pto file: func.func, arith.*, memref)
+  → ptoas (PTO assembler) → NPU binary
+```
+
+Key design difference from PyPTO-main: **explicit memory spaces** in the user API.
+The user specifies data movement targets — compiler handles the rest:
+```python
+@pl.program
+class MatmulExample:
+    @pl.function
+    def main(self, a: pl.Tensor[[M, K], pl.BF16],
+                   b: pl.Tensor[[K, N], pl.BF16]) -> pl.Tensor[[M, N], pl.FP32]:
+        a_l1 = pl.load(a, [0, 0], [32, 32], target_memory=pl.Mem.Mat)   # DDR → L1
+        b_l1 = pl.load(b, [0, 0], [32, 32], target_memory=pl.Mem.Mat)
+        a_l0a = pl.move(a_l1, target_memory=pl.Mem.Left)                 # L1 → L0A
+        b_l0b = pl.move(b_l1, target_memory=pl.Mem.Right)                # L1 → L0B
+        c_acc = pl.matmul(a_l0a, b_l0b)                                  # → L0C (Acc)
+        return pl.store(c_acc, [0, 0], out)
+```
+
+#### Sync Insertion
+
+Fully automated via a 4-phase `SyncInserter` algorithm on the SSA IR: <sup>[[39]](#ref-39)</sup>
+
+1. **CollectSyncPairs** — walks the AST tracking last writers/readers per MemRef.
+   Detects RAW, WAW, WAR hazards across statements. Handles `if`/`else` branches
+   via state merging, `for` loops via fixed-point iteration. Removes transitive
+   and linear redundant pairs.
+2. **AdjustScopeCrossings** — moves sync points when producer and consumer are in
+   different control flow scopes (e.g. one inside `if`, other outside).
+3. **AssignEventIds** — allocates from 8 hardware event IDs per pipe pair
+   (`EventIdManager`), with position-based free tracking.
+4. **ApplyInsertions** — mutates AST to insert `set_flag`/`wait_flag` calls
+   at computed positions.
+
+Pipeline assignment per op is backend-specific (`backend->InferPipe(call)`) —
+supports 910B and 950 with different pipe configurations. <sup>[[39]](#ref-39)</sup>
+
+Cross-core sync for mixed AIC/AIV kernels via `expand_mixed_kernel_pass`. <sup>[[40]](#ref-40)</sup>
+
+**Conclusion**: User writes no sync. The compiler performs full MemRef-level
+dependency analysis with scope-aware insertion and hardware event ID management.
+
+#### Ping-Pong
+
+Handled by the optimization pipeline (Default strategy): <sup>[[38]](#ref-38)</sup>
+1. `InitMemRef` — assigns memory spaces and inserts buffer allocations <sup>[[41]](#ref-41)</sup>
+2. `MemoryReuse` — shares buffers with non-overlapping lifetimes <sup>[[42]](#ref-42)</sup>
+3. `LegalizePTOBufferReuse` — legalizes buffer reuse for PTO backend <sup>[[43]](#ref-43)</sup>
+
+No explicit `num_stages` or `T.Pipelined`. The Qwen3 decode example (pypto-lib PR #25)
+shows manual tile sizing for TILELET (2 KB vector) and TILE (16 KB cube) budgets —
+the user controls chunk sizes, the compiler handles pipelining. <sup>[[44]](#ref-44)</sup>
+
+**Conclusion**: Pipelining is compiler-managed. User controls tile shapes
+to fit hardware budgets.
+
+#### UB Memory Allocation and Reuse
+
+Three-pass approach: <sup>[[45]](#ref-45) [[41]](#ref-41) [[46]](#ref-46)</sup>
+1. `InferTileMemorySpace` — infers memory space (Vec/Mat/Left/Right/Acc) for each
+   tile based on operation semantics <sup>[[45]](#ref-45)</sup>
+2. `InitMemRef` — creates MemRef descriptors with sizes, assigns concrete memory
+   spaces, inserts alloc/free points <sup>[[41]](#ref-41)</sup>
+3. `AllocateMemoryAddr` — assigns concrete byte addresses within each memory
+   space <sup>[[46]](#ref-46)</sup>
+
+Between steps 2 and 3, `MemoryReuse` performs liveness analysis and merges
+non-overlapping buffers into shared memory regions. <sup>[[42]](#ref-42)</sup>
+
+**Conclusion**: UB allocation is fully automated — infer space, create buffers,
+reuse by liveness, assign addresses. User specifies `target_memory` on loads
+but never manages addresses or buffer sizes.
+
 ## 4. Key Design Decisions
 
 ## 5. API Specification
@@ -592,3 +676,12 @@ No user-visible memory APIs.
 | 35 | PyPTO add_alloc / schedule_ooo — Block Graph allocation and scheduling | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/schedule_ooo/add_alloc.cpp |
 | 36 | PyPTO assign_memory_type — memory space assignment at Tile Graph | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/tile_graph_pass/data_path/assign_memory_type.cpp |
 | 37 | PyPTO memory_reuse — liveness-based buffer reuse | https://gitcode.com/cann/pypto/blob/master/framework/src/passes/block_graph_pass/memory_reuse/global_memory_reuse.cpp |
+| 38 | PyPTOv3 language guide — DSL, memory hierarchy, optimization pipeline | https://github.com/hw-native-sys/pypto/blob/main/docs/en/user/01-language_guide.md |
+| 39 | PyPTOv3 insert_sync_pass — 4-phase sync insertion algorithm | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/insert_sync_pass.cpp |
+| 40 | PyPTOv3 expand_mixed_kernel_pass — AIC/AIV split + cross-core sync | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/expand_mixed_kernel_pass.cpp |
+| 41 | PyPTOv3 init_memref — buffer allocation and memory space assignment | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/init_memref.cpp |
+| 42 | PyPTOv3 memory_reuse_pass — liveness-based buffer sharing | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/memory_reuse_pass.cpp |
+| 43 | PyPTOv3 legalize_pto_buffer_reuse — PTO backend buffer legalization | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/legalize_pto_buffer_reuse_pass.cpp |
+| 44 | PyPTOv3 Qwen3 decode example — tilelet-aware tiling | https://github.com/hw-native-sys/pypto-lib/pull/25 |
+| 45 | PyPTOv3 infer_tile_memory_space — memory space inference | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/infer_tile_memory_space_pass.cpp |
+| 46 | PyPTOv3 allocate_memory_addr — concrete address assignment | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/allocate_memory_addr_pass.cpp |
