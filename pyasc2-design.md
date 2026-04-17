@@ -631,6 +631,62 @@ non-overlapping buffers into shared memory regions. <sup>[[42]](#ref-42)</sup>
 reuse by liveness, assign addresses. User specifies `target_memory` on loads
 but never manages addresses or buffer sizes.
 
+### 3.7 Comparison
+
+| | **AscendC** | **Triton** | **cuTile** | **TileLang-Ascend** | **Triton-Ascend** | **PyPTO-main** | **PyPTOv3** |
+|---|---|---|---|---|---|---|---|
+| **Abstraction level** | Instruction | Tile/block | Tile | Tile (hybrid) | Tile/block | Tensor | Tensor + Tile (expert) |
+| **Sync insertion** | Manual | Auto | Auto (no escape) | Hybrid (auto opt-in) | Auto (HIVM) | Auto | Auto (4-phase) |
+| **Ping-pong** | Manual | Auto (`num_stages`) | Auto (no hint) | `T.Pipelined(num_stages)` | Auto (multiBuffer) | Auto | Auto |
+| **UB memory** | Manual | Auto (AllocationAnalysis) | Auto (SIMT + TMEM) | Hybrid (opt-in planning) | Auto (PlanMemory/HIVM) | Auto | Auto (3-pass) |
+| **UB overflow detection** | Silent corruption | Compile-time error | Compile-time error | Partial (opt-in) | Compile-time error | ? | ? |
+| **IR type** | C++ (AscendC) | MLIR (TTIR/TTGIR) | MLIR (TileIR) | TVM TIR | MLIR (TTIR→HIVM) | Custom C++ graphs | Custom C++ AST |
+| **User memory control** | Full manual | None | None | Explicit hierarchy | Indirect (BLOCK_SIZE) | None | `target_memory` hint |
+| **GPU portability** | None | Native | Native (NVIDIA only) | Partial | Low (needs rewrite) | None | None |
+| **Ascend-native** | Yes | No | No | Yes | Partial | Yes | Yes |
+| **Hardware** | 910B/C | NVIDIA/AMD/Intel | NVIDIA Blackwell | Ascend A2/A3 | Ascend A2/A3 | Ascend 910B | 910B, 950 |
+
+#### Key Observations for PyAsc2 Design
+
+**1. Full automation is achievable on Ascend — performance cost varies.**
+Among Ascend-targeting frameworks, Triton-Ascend, TileLang-Ascend, PyPTO-main, and
+PyPTOv3 all automate sync, ping-pong, and UB allocation. But automation quality differs:
+TileLang-Ascend's auto sync generates conservative `PipeBarrier<PIPE_ALL>` instead of
+fine-grained flags. No published benchmarks compare automated vs hand-optimized AscendC
+for the same kernels. The gap between "correct" and "optimal" automatic code is the main
+engineering challenge for PyAsc2.
+
+**2. The right abstraction level is tensor — with tile escape hatch.**
+PyPTOv3's two-level design covers both use cases. Triton's tile-only model forces all
+users into low-level thinking. cuTile's no-escape model limits advanced optimization.
+PyAsc2 should follow PyPTOv3's approach: tensor-level default, tile-level available.
+
+**3. Memory hierarchy hints > full manual control.**
+cuTile (fully implicit) and AscendC (fully explicit) are the two extremes. PyPTOv3's
+`target_memory=pl.Mem.Mat` is the sweet spot — the user declares intent, the compiler
+handles mechanics.
+
+**4. Liveness-based UB reuse is critical — more so than on GPU.**
+On GPU, shared memory reuse pressure is low — up to 228 KB available, rarely exhausted.
+On Ascend, UB is 192 KB (96 KB with double buffering) and almost always the bottleneck.
+Suboptimal reuse forces smaller tiles or spills to global memory. PyAsc2 should provide
+automatic reuse by default with an option for expert override of buffer placement.
+
+**5. Compile-time UB overflow detection is non-negotiable.**
+AscendC's silent corruption is the #1 developer pain point. Every modern framework
+catches overflow at compile time. PyAsc2 must validate UB/L1/L0 fit at compile time
+with clear error messages.
+
+**6. `num_stages` vs fully automatic pipelining.**
+Triton and TileLang-Ascend expose pipeline depth to users. cuTile, PyPTO-main, and
+PyPTOv3 hide it entirely. For PyAsc2: default to automatic, provide `num_stages` as
+optional expert hint.
+
+**7. Ascend-native IR outperforms adapted GPU IR.**
+Triton-Ascend's TTIR→HIVM path works but requires user-level rewrites (BLOCK_SIZE_SUB,
+fixed grid, alignment). Native Ascend frameworks handle these in the compiler. PyAsc2
+should be Ascend-native from the start.
+
 ## 4. Key Design Decisions
 
 ## 5. API Specification
