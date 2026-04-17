@@ -1,6 +1,26 @@
 # PyAsc2 API Design
 
-> TODO: put TOC with swction hyperlinks here 
+## Contents
+
+- [1. Requirements](#1-requirements)
+- [2. Key Challenges for Ascend NPU](#2-key-challenges-for-ascend-npu)
+  - [2.1 Synchronization Insertion](#21-synchronization-insertion)
+  - [2.2 Ping-Pong (Double Buffering)](#22-ping-pong-double-buffering)
+  - [2.3 UB Memory Allocation and Reuse](#23-ub-memory-allocation-and-reuse)
+  - [2.4 Hardware Differences: 910B/C vs 950](#24-hardware-differences-910bc-vs-950)
+- [3. Programming Model Analysis](#3-programming-model-analysis)
+  - [3.1 AscendC](#31-ascendc)
+  - [3.2 Triton](#32-triton)
+  - [3.3 cuTile](#33-cutile)
+  - [3.4 TileLang-Ascend](#34-tilelang-ascend)
+  - [3.5 Triton-Ascend](#35-triton-ascend)
+  - [3.6 PyPTO](#36-pypto)
+    - [3.6.1 PyPTO-main](#361-pypto-main)
+    - [3.6.2 PyPTOv3 (redesign)](#362-pyptov3-redesign)
+  - [3.7 Comparison](#37-comparison)
+- [4. Key Design Decisions](#4-key-design-decisions)
+- [5. API Specification](#5-api-specification)
+- [6. References](#6-references)
 
 ## 1. Requirements
 
