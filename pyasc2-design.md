@@ -18,7 +18,8 @@
     - [3.6.1 PyPTO-main](#361-pypto-main)
     - [3.6.2 PyPTOv3 (redesign)](#362-pyptov3-redesign)
   - [3.7 Pallas (JAX)](#37-pallas-jax)
-  - [3.8 Comparison](#38-comparison)
+  - [3.8 Mojo (Modular)](#38-mojo-modular)
+  - [3.9 Comparison](#39-comparison)
 - [4. Key Design Decisions](#4-key-design-decisions)
 - [5. API Specification](#5-api-specification)
 - [6. References](#6-references)
@@ -756,19 +757,126 @@ If total VMEM usage exceeds 32 MB (including double-buffer overhead), compilatio
 shapes via BlockSpec. The 32 MB budget is ~170× Ascend's UB — memory pressure is
 rarely an issue on TPU.
 
-### 3.8 Comparison
+### 3.8 Mojo (Modular)
 
-| | **AscendC** | **Triton** | **cuTile** | **TileLang-Ascend** | **Triton-Ascend** | **PyPTO-main** | **PyPTOv3** | **Pallas** |
-|---|---|---|---|---|---|---|---|---|
-| **Abstraction level** | Instruction | Tile/block | Tile | Tile (hybrid) | Tile/block | Tensor | Tensor + Tile (expert) | Tile (BlockSpec) |
-| **Sync insertion** | Manual | Auto | Auto (no escape) | Hybrid (auto opt-in) | Auto (HIVM) | Auto | Auto (4-phase) | Auto (Mosaic from BlockSpec) |
-| **Ping-pong** | Manual | Auto (`num_stages`) | Auto (no hint) | `T.Pipelined(num_stages)` | Auto (multiBuffer) | Auto | Auto | Auto (2-stage default) |
-| **On-chip memory** | UB 192 KB | Shared ~228 KB | Shared + TMEM 256 KB | UB 192 KB | UB 192 KB | UB 192 KB | UB 192 KB | VMEM 32 MB |
-| **Memory mgmt** | Manual | Auto (AllocationAnalysis) | Auto | Hybrid (opt-in planning) | Auto (PlanMemory/HIVM) | Auto | Auto (3-pass) | Auto (BlockSpec) |
-| **Overflow detection** | Silent corruption | Compile-time error | Compile-time error | Partial (opt-in) | Compile-time error | ? | ? | Compile-time error |
-| **IR type** | C++ (AscendC) | MLIR (TTIR/TTGIR) | MLIR (TileIR) | TVM TIR | MLIR (TTIR→HIVM) | Custom C++ graphs | Custom C++ AST | Jaxpr → Mosaic (MLIR) |
-| **User memory control** | Full manual | None | None | Explicit hierarchy | Indirect (BLOCK_SIZE) | None | `target_memory` hint | BlockSpec (tile shape) |
-| **Hardware** | Ascend 910B/C | NVIDIA/AMD/Intel | NVIDIA Blackwell | Ascend A2/A3 | Ascend A2/A3 | Ascend 910B | 910B, 950 | Google TPU |
+Mojo is a Python superset by Modular (Chris Lattner). Systems-level language
+with explicit GPU kernel programming. Uses MLIR internally via KGEN compiler. <sup>[[52]](#ref-52)</sup>
+
+Pipeline: <sup>[[52]](#ref-52)</sup>
+```
+Mojo source → KGEN compiler (MLIR-based) → platform-specific backend
+  → PTX (NVIDIA) / HIP (AMD) / Metal (Apple) → GPU binary
+```
+
+Abstraction level: **between CUDA and Triton**. Thread-centric like CUDA
+(explicit threads, blocks, sync), but with tile-level abstractions
+(`TileTensor`, `TileIO`, `TilePipeline`) for structured kernels. <sup>[[53]](#ref-53)</sup>
+
+Supports NVIDIA, AMD, and Apple GPUs. No TPU or Ascend support.
+
+Simple kernel — CUDA-like thread model, Python-like syntax: <sup>[[55]](#ref-55)</sup>
+```mojo
+def scalar_add(vector: UnsafePointer[Float32], size: Int, scalar: Float32):
+    idx = block_idx.x * block_dim.x + thread_idx.x
+    if idx < size:
+        vector[idx] += scalar
+
+ctx.enqueue_function[scalar_add](device_buffer, 20, Float32(5.0),
+                                  grid_dim=1, block_dim=20)
+```
+
+#### Sync Insertion
+
+**Manual.** User writes explicit barriers — closer to CUDA than to Triton: <sup>[[54]](#ref-54)</sup>
+- `barrier()` — block-level sync (like CUDA `__syncthreads()`)
+- `syncwarp()` — warp-level sync
+- `named_barrier(id, count)` — multiple independent barriers
+
+Platform-specific differences managed by user: <sup>[[53]](#ref-53)</sup>
+- **NVIDIA Blackwell**: hardware `mbarrier` with automatic byte counting for TMA
+- **AMD MI300X**: no `mbarrier` — explicit atomic counters with `s_sleep 0` yield
+
+Structured kernel pattern ("three pillars") separates concerns: <sup>[[53]](#ref-53)</sup>
+- `TileIO` — data movement between memory levels
+- `TilePipeline` — producer-consumer with `acquire`/`release` semantics
+- `TileOp` — MMA/compute instructions
+
+```mojo
+# Three warp roles execute in parallel:
+# Load warp:    acquires producer stage → TMA load → signals completion
+# MMA warp:     waits on input pipeline → computes → signals output pipeline
+# Epilogue warp: reads from TMEM → writes to global memory
+with producer.acquire() as tiles:
+    tile_io.load(tiles, barrier, k_coord)  # explicit DMA + barrier
+```
+
+**Conclusion**: Sync is fully manual. The "three pillars" pattern provides structure
+but the user orchestrates all barriers. No compiler-automated sync insertion.
+
+#### Ping-Pong
+
+**Manual.** Mojo intentionally rejects Triton-style automation — their position:
+automatic compilation improves accessibility but hits a performance ceiling for
+production inference, forcing developers back to low-level code. <sup>[[56]](#ref-56)</sup>
+
+Instead, the `TilePipeline` abstraction provides structured manual control
+via `acquire`/`release` context managers: <sup>[[53]](#ref-53)</sup>
+
+```mojo
+with producer.acquire() as tiles:
+    tile_io.load(tiles, barrier, k_coord)   # load next tile
+# release: signals consumer that data is ready
+
+with consumer.acquire() as tiles:
+    tile_op.mma(tiles)                       # compute on current tile
+# release: signals producer that buffer is free
+```
+
+Three warp roles execute in parallel: load warp (DMA), MMA warp (compute),
+epilogue warp (store). User assigns warps to roles explicitly. <sup>[[53]](#ref-53)</sup>
+
+Result: 48% less code than CUTLASS with identical performance, but still
+fully user-orchestrated. <sup>[[56]](#ref-56)</sup>
+
+**Conclusion**: Pipelining is user-structured via `TilePipeline`, not compiler-generated.
+Design choice: structured manual control over automation with escape hatches.
+
+#### UB Memory Allocation and Reuse
+
+**Manual.** User declares memory explicitly: <sup>[[55]](#ref-55)</sup>
+- **Shared memory**: `Shared` type for block-visible scratchpad
+- **Registers**: small compile-time-sized arrays auto-allocated by compiler
+- **Global memory**: `DeviceBuffer` types
+
+`TileTensor` carries compile-time layout information (shape, stride, swizzle)
+and memory address space placement — enabling the compiler to verify layouts
+at compile time without managing allocation itself. <sup>[[57]](#ref-57)</sup>
+
+Platform-specific memory handled by user: <sup>[[53]](#ref-53)</sup>
+- **NVIDIA Blackwell**: TMEM (256 KB) managed via explicit context managers —
+  entering signals readiness, exiting deallocates
+- **AMD MI300X**: accumulators live in VGPRs, compiler manages register allocation
+
+No liveness-based buffer reuse by the compiler. User controls all allocation
+and lifetime.
+
+**Conclusion**: Memory is user-managed. `TileTensor` provides type-safe layout
+verification but not automatic allocation or reuse. Consistent with Mojo's
+philosophy: structured control over automation.
+
+### 3.9 Comparison
+
+| | **AscendC** | **Triton** | **cuTile** | **TileLang-Ascend** | **Triton-Ascend** | **PyPTO-main** | **PyPTOv3** | **Pallas** | **Mojo** |
+|---|---|---|---|---|---|---|---|---|---|
+| **Abstraction level** | Instruction | Tile/block | Tile | Tile (hybrid) | Tile/block | Tensor | Tensor + Tile (expert) | Tile (BlockSpec) | Thread + Tile (structured) |
+| **Sync insertion** | Manual | Auto | Auto (no escape) | Hybrid (auto opt-in) | Auto (HIVM) | Auto | Auto (4-phase) | Auto (Mosaic from BlockSpec) | Manual (three pillars) |
+| **Ping-pong** | Manual | Auto (`num_stages`) | Auto (no hint) | `T.Pipelined(num_stages)` | Auto (multiBuffer) | Auto | Auto | Auto (2-stage default) | Manual (`TilePipeline`) |
+| **On-chip memory** | UB 192 KB | Shared ~228 KB | Shared + TMEM 256 KB | UB 192 KB | UB 192 KB | UB 192 KB | UB 192 KB | VMEM 32 MB | Shared (GPU) |
+| **Memory mgmt** | Manual | Auto (AllocationAnalysis) | Auto | Hybrid (opt-in planning) | Auto (PlanMemory/HIVM) | Auto | Auto (3-pass) | Auto (BlockSpec) | Manual (TileTensor) |
+| **Overflow detection** | Silent corruption | Compile-time error | Compile-time error | Partial (opt-in) | Compile-time error | ? | ? | Compile-time error | Compile-time (layout) |
+| **IR type** | C++ (AscendC) | MLIR (TTIR/TTGIR) | MLIR (TileIR) | TVM TIR | MLIR (TTIR→HIVM) | Custom C++ graphs | Custom C++ AST | Jaxpr → Mosaic (MLIR) | MLIR (KGEN) |
+| **User memory control** | Full manual | None | None | Explicit hierarchy | Indirect (BLOCK_SIZE) | None | `target_memory` hint | BlockSpec (tile shape) | Full manual (Shared, TMEM) |
+| **Hardware** | Ascend 910B/C | NVIDIA/AMD/Intel | NVIDIA Blackwell | Ascend A2/A3 | Ascend A2/A3 | Ascend 910B | 910B, 950 | Google TPU | NVIDIA/AMD/Apple |
 
 #### Key Observations for PyAsc2 Design
 
@@ -870,3 +978,9 @@ should be Ascend-native from the start.
 | 49 | Pallas TPU details — memory, sync, tiling constraints | https://docs.jax.dev/en/latest/pallas/tpu/details.html |
 | 50 | Pallas paged attention kernel — async_copy + semaphore usage | https://github.com/jax-ml/jax/blob/main/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py |
 | 51 | Pallas TPU pipelining — emit_pipeline, lookahead prefetch | https://docs.jax.dev/en/latest/pallas/tpu/pipelining.html |
+| 52 | Mojo MLIR-based compilation — KGEN compiler (arXiv:2509.21039) | https://arxiv.org/abs/2509.21039 |
+| 53 | Structured Mojo Kernels Part 2 — three pillars (TileIO, TilePipeline, TileOp) | https://www.modular.com/blog/structured-mojo-kernels-part-2-the-three-pillars |
+| 54 | Mojo GPU sync primitives — barrier, syncwarp, named_barrier | https://docs.modular.com/mojo/manual/gpu/block-and-warp/ |
+| 55 | Mojo GPU fundamentals — kernel model, thread indexing | https://docs.modular.com/mojo/manual/gpu/fundamentals/ |
+| 56 | Structured Mojo Kernels Part 1 — design philosophy, performance | https://www.modular.com/blog/structured-mojo-kernels-part-1-peak-performance-half-the-code |
+| 57 | TileTensor — parametric tile-level tensors in Mojo | https://www.modular.com/blog/tiletensor-part-1-safer-more-efficient-gpu-kernels |
