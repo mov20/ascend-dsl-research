@@ -18,6 +18,7 @@
     - [3.6.1 PyPTO-main](#361-pypto-main)
     - [3.6.2 PyPTOv3 (redesign)](#362-pyptov3-redesign)
   - [3.7 Comparison](#37-comparison)
+  - [3.8 Pallas (JAX)](#38-pallas-jax)
 - [4. Key Design Decisions](#4-key-design-decisions)
 - [5. API Specification](#5-api-specification)
 - [6. References](#6-references)
@@ -707,6 +708,110 @@ Triton-Ascend's TTIR→HIVM path works but requires user-level rewrites (BLOCK_S
 fixed grid, alignment). Native Ascend frameworks handle these in the compiler. PyAsc2
 should be Ascend-native from the start.
 
+### 3.8 Pallas (JAX)
+
+Pallas is Google's kernel DSL for TPU (and GPU via Triton backend).
+Part of JAX. No decorator, no custom parser — kernels are regular Python functions
+passed to `pl.pallas_call()`, which triggers JAX tracing. <sup>[[47]](#ref-47)</sup>
+
+Pipeline: <sup>[[48]](#ref-48)</sup>
+```
+pl.pallas_call(kernel_fn, grid, BlockSpecs)
+  → JAX tracing (symbolic execution) → Jaxpr (JAX IR)
+  → Pallas IR (Jaxpr + BlockSpec + grid)
+  → Mosaic compiler (MLIR: vector + arith + tpu dialects)
+  → TPU IR → LLO → TPU machine code
+```
+
+User-facing code — kernel is plain Python, `pallas_call` defines tiling:
+```python
+def matmul_kernel(a_ref, b_ref, o_ref):
+    o_ref[:, :] = jnp.dot(a_ref[:, :], b_ref[:, :])
+
+result = pl.pallas_call(
+    matmul_kernel,
+    out_shape=jax.ShapeDtypeStruct((64, 64), jnp.float32),
+    grid=(1,),
+    in_specs=[pl.BlockSpec((64, 128), lambda i: (0, 0)),
+              pl.BlockSpec((128, 64), lambda i: (0, 0))],
+    out_specs=pl.BlockSpec((64, 64), lambda i: (0, 0)),
+)(a, b)
+```
+
+#### Sync Insertion
+
+TPU has two compute units (MXU for matmul, VPU for vector ops) but they share
+a **single instruction stream** — no parallel pipeline hazards between them. <sup>[[49]](#ref-49)</sup>
+
+Pipelining on TPU is **DMA vs compute** overlap: the DMA engine loads the next tile
+while compute processes the current one. This is the only source of concurrency
+within a core. <sup>[[49]](#ref-49)</sup>
+
+**Automatic (default):** user writes `pallas_call` with `BlockSpec`. Mosaic compiler
+generates all DMA operations, semaphores, and double-buffer swaps from the BlockSpec
+— user never writes sync code: <sup>[[47]](#ref-47)</sup>
+```python
+def kernel(a_ref, b_ref, o_ref):
+    o_ref[:, :] = a_ref[:, :] + b_ref[:, :]  # no DMA, no sync
+
+pl.pallas_call(kernel, grid=(N,),
+    in_specs=[pl.BlockSpec((128,), lambda i: (i,))],
+    out_specs=pl.BlockSpec((128,), lambda i: (i,)),
+    ...)(a, b)
+# Mosaic: BlockSpec → DMA schedule → semaphore insertion → double buffering
+```
+
+**Manual (expert):** for advanced patterns (paged attention, custom prefetch),
+user writes `pltpu.async_copy` + semaphores directly: <sup>[[50]](#ref-50)</sup>
+```python
+sem = pltpu.SemaphoreType.DMA((2,))
+pltpu.async_copy(hbm_ref.at[slice], vmem_buffer, sem).wait()
+```
+
+Compare: Ascend has 3+ parallel units (MTE2, Cube, Vector, MTE3) requiring
+fine-grained `set_flag`/`wait_flag` between each pair. TPU has 2 (DMA + compute).
+
+**Conclusion**: Sync is compiler-generated from BlockSpec by default.
+Manual semaphores available as escape hatch. Simpler than Ascend — only
+DMA↔compute overlap, no Cube↔Vector hazards.
+
+#### Ping-Pong
+
+TPU on-chip memory: **VMEM** (Vector Memory) — 32 MB SRAM per core,
+equivalent to Ascend's UB but ~170× larger (32 MB vs 192 KB). <sup>[[49]](#ref-49)</sup>
+
+Default: 2-level double buffering for all inputs and outputs, generated
+automatically by Mosaic from BlockSpec. Sufficient for most kernels because
+VMEM is large enough that double buffering rarely causes pressure. <sup>[[49]](#ref-49)</sup>
+
+Advanced control via `pltpu.emit_pipeline` — supports nested pipelines and
+lookahead prefetch (fetch next block as soon as a buffer slot is free, not
+just one iteration ahead). <sup>[[51]](#ref-51)</sup>
+
+**Conclusion**: Ping-pong is automatic (2-stage default from BlockSpec).
+Advanced pipelining API available but rarely needed due to large VMEM.
+
+#### UB Memory Allocation and Reuse
+
+TPU memory hierarchy: <sup>[[49]](#ref-49)</sup>
+- **HBM** — main memory (GBs), slow
+- **VMEM** — 32 MB vector SRAM per core, holds tiles during compute
+- **VREG** — vector registers (8×128 tiles for fp32), fastest
+- **SMEM** — ~4-8 KB scalar SRAM, for control/metadata only
+
+User controls tiling via `BlockSpec(shape, index_map)` — this determines how much
+VMEM each tile consumes. The compiler handles VMEM allocation internally. <sup>[[47]](#ref-47)</sup>
+
+Tiling constraints: last 2 dimensions must be divisible by 8 and 128 respectively
+(matching 8×128 vector register shape). <sup>[[49]](#ref-49)</sup>
+
+No user-visible VMEM address management — unlike Ascend's manual UB offset planning.
+If total VMEM usage exceeds 32 MB (including double-buffer overhead), compilation fails.
+
+**Conclusion**: VMEM allocation is fully compiler-managed. User only controls tile
+shapes via BlockSpec. The 32 MB budget is ~170× Ascend's UB — memory pressure is
+rarely an issue on TPU.
+
 ## 4. Key Design Decisions
 
 ## 5. API Specification
@@ -761,3 +866,8 @@ should be Ascend-native from the start.
 | 44 | PyPTOv3 Qwen3 decode example — tilelet-aware tiling | https://github.com/hw-native-sys/pypto-lib/pull/25 |
 | 45 | PyPTOv3 infer_tile_memory_space — memory space inference | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/infer_tile_memory_space_pass.cpp |
 | 46 | PyPTOv3 allocate_memory_addr — concrete address assignment | https://github.com/hw-native-sys/pypto/blob/main/src/ir/transforms/allocate_memory_addr_pass.cpp |
+| 47 | Pallas — JAX kernel language overview | https://jax.readthedocs.io/en/latest/pallas/index.html |
+| 48 | Pallas design notes — compilation pipeline | https://jax.readthedocs.io/en/latest/pallas/design/design.html |
+| 49 | Pallas TPU details — memory, sync, tiling constraints | https://docs.jax.dev/en/latest/pallas/tpu/details.html |
+| 50 | Pallas paged attention kernel — async_copy + semaphore usage | https://github.com/jax-ml/jax/blob/main/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py |
+| 51 | Pallas TPU pipelining — emit_pipeline, lookahead prefetch | https://docs.jax.dev/en/latest/pallas/tpu/pipelining.html |
