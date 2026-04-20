@@ -8,10 +8,8 @@
   - [2.2 Ping-Pong (Double Buffering)](#22-ping-pong-double-buffering)
   - [2.3 UB Memory Allocation and Reuse](#23-ub-memory-allocation-and-reuse)
   - [2.4 Hardware Differences: 910B/C vs 950](#24-hardware-differences-910bc-vs-950)
-    - [2.4.1 Identity and SDK Layout](#241-identity-and-sdk-layout)
-    - [2.4.2 Three API Surfaces on 950](#242-three-api-surfaces-on-950)
-    - [2.4.3 Hardware Capability Deltas](#243-hardware-capability-deltas)
-    - [2.4.4 Implications for the Three DSL Challenges](#244-implications-for-the-three-dsl-challenges)
+    - [2.4.1 Hardware Capability Deltas](#241-hardware-capability-deltas)
+    - [2.4.2 Implications for the Three DSL Challenges](#242-implications-for-the-three-dsl-challenges)
 - [3. Programming Model Analysis](#3-programming-model-analysis)
   - [3.1 AscendC](#31-ascendc)
     - [3.1.1 AscendC on 910B/C](#311-ascendc-on-910bc)
@@ -73,71 +71,12 @@ validated at compile time.
 **910C** is two 910B dies in one package — same Da Vinci architecture, same AIC/AIV
 model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 
-950 is not an incremental refresh of 910b — it introduces a new build target,
-a new ISA, two new programming surfaces, and new hardware capabilities (GM atomics,
-register-addressable SIMD, kernel-side printf). Findings below are derived from
-inspection of the CANN 9.0.0-beta.1 SDK. <sup>[[58]](#ref-58)</sup>
+950 is not an incremental refresh of 910b. It introduces new hardware capabilities
+(GM atomics, register-addressable SIMD, kernel-side printf) and two new AscendC
+programming surfaces (covered in §3.1.2). Findings below are derived from inspection
+of the CANN 9.0.0-beta.1 SDK. <sup>[[58]](#ref-58)</sup>
 
-#### 2.4.1 Identity and SDK Layout
-
-Three parallel identifiers are used for the same chip across the SDK:
-
-| Layer | Identifier |
-|---|---|
-| SoC / platform name | `Ascend950`, `Ascend950PR_<n>` (production), `Ascend950DT_<n>` (development) — 32 SKUs total |
-| Build-mode target (compiler) | **`c310`** when the SoC is in `ascend950_list` |
-| Low-level ISA variant | **`v300`** (kernel header suffix `*_v300_impl.h`) |
-
-Lineage: `v100`=310, `v200`=910, `v220`=910b, **`v300`=950**; build-mode
-`c100` → `c220` → **`c310`**. Default SoC used by out-of-tree builds:
-`Ascend950PR_9599`. Per-SKU variance is confined to runtime `.ini` profiles
-— the programming model is single-target. <sup>[[58]](#ref-58)</sup>
-
-950 kernel code lives primarily under
-`cann-asc-devkit_9.0.0-beta.1/x86_64-linux/asc/impl/`, split by API surface
-(`basic_api/`, `adv_api/`, `micro_api/`, `simt_api/`, `c_api/`), each with
-per-arch subdirs (`dav_c220/`, `dav_c310/`, …).
-
-#### 2.4.2 Three API Surfaces on 950
-
-AscendC on 950 is not a single programming model; it is three stacked surfaces,
-two of which are brand-new: <sup>[[58]](#ref-58)</sup>
-
-| Surface | 910b (c220) | 950 (c310) | Style |
-|---|---|---|---|
-| **basic_api** | ✓ 35 impl files | ✓ 39 impl files | Hardware intrinsics, memory-centric (`__ubuf__` ptrs + explicit `repeatTime` / `BlkStride` / `RepStride`) |
-| **MicroAPI** | ✗ absent | ✓ 20 interface files + `dav_c310/` backend | Register-tensor SIMD functional. `RegTensor<T>` values, `MaskReg` predication, `LoadAlign`/`StoreAlign`, arch-dispatched via `__NPU_ARCH__` |
-| **SIMT-API** | ✗ absent | ✓ 21 files + `dav_c310/` backend | CUDA-like per-thread scalar. Per-thread values, atomics on `__gm__`/`__ubuf__`, warp-level primitives |
-
-Canonical example — same op (`Relu`) in each style:
-
-```cpp
-// 910b basic_api (dav_c220)
-template <typename T>
-void ReluIntrinsicsImpl(__ubuf__ T* dst, __ubuf__ T* src,
-                        uint8_t repeatTime, const UnaryRepeatParams& p) {
-    vrelu(dst, src, repeatTime,
-          p.dstBlkStride, p.srcBlkStride, p.dstRepStride, p.srcRepStride);
-}
-
-// 950 MicroAPI (micro_api/dav_c310)
-namespace MicroAPI {
-template <typename T, MaskMergeMode mode, typename U>
-void Relu(U& dstReg, U& srcReg, MaskReg& mask) {      // U = RegTensor<T>
-    ReluImpl<T, mode, U>(dstReg, srcReg, mask);
-}
-}
-
-// 950 SIMT-API (simt_api/dav_c310)
-template <typename T>
-T AbsImpl(T x) { return (x < 0) ? -x : x; }           // scalar on thread
-```
-
-A kernel written against MicroAPI or SIMT-API **will not compile** for 910b —
-both surfaces are 950-exclusive and both require the c310 build-mode. Choosing
-a surface is therefore a portability decision a DSL must make explicit.
-
-#### 2.4.3 Hardware Capability Deltas
+#### 2.4.1 Hardware Capability Deltas
 
 The capability deltas below are visible in the c310 source tree and are directly
 relevant to DSL design: <sup>[[58]](#ref-58)</sup>
@@ -182,7 +121,7 @@ relevant to DSL design: <sup>[[58]](#ref-58)</sup>
   between `PIPE_MTE2` and `PIPE_V` remain explicit (confirmed in PTO engram
   kernel source for A5). <sup>[[8]](#ref-8)</sup>
 
-#### 2.4.4 Implications for the Three DSL Challenges
+#### 2.4.2 Implications for the Three DSL Challenges
 
 - **Sync insertion.** Three surfaces now coexist with different sync models:
   basic_api keeps explicit `set_flag` / `wait_flag` and TPipe events;
@@ -218,10 +157,10 @@ AscendC is not a single programming model — it has evolved with the hardware.
 On 910B/C the only surface is `basic_api` (TPipe/TQue, memory-centric). On 950
 two additional surfaces appeared — MicroAPI (register-tensor SIMD with
 predication) and SIMT-API (CUDA-like per-thread scalar) — neither of which
-compiles for 910b (see §2.4.2). We therefore split this section along the
-910B/C vs 950 axis: §3.1.1 covers `basic_api` behavior that applies to both
-targets (content written against 910b c220, unchanged on c310); §3.1.2 covers
-what is new and 950-exclusive.
+compiles for 910b. We therefore split this section along the 910B/C vs 950
+axis: §3.1.1 covers `basic_api` behavior that applies to both targets (content
+written against 910b c220, unchanged on c310); §3.1.2 covers what is new and
+950-exclusive.
 
 #### 3.1.1 AscendC on 910B/C
 
@@ -323,6 +262,42 @@ programming style analyzed in §3.1.1 is available via build-mode `c310`, and
 the three-challenge analysis above carries over unchanged. What is new on 950
 are (a) c310 deltas inside `basic_api`, and (b) two brand-new API surfaces
 (MicroAPI, SIMT-API) that are unavailable on 910b. <sup>[[58]](#ref-58)</sup>
+
+The three surfaces stack as follows:
+
+| Surface | 910b (c220) | 950 (c310) | Style |
+|---|---|---|---|
+| **basic_api** | ✓ 35 impl files | ✓ 39 impl files | Hardware intrinsics, memory-centric (`__ubuf__` ptrs + explicit `repeatTime` / `BlkStride` / `RepStride`) |
+| **MicroAPI** | ✗ absent | ✓ 20 interface files + `dav_c310/` backend | Register-tensor SIMD functional. `RegTensor<T>` values, `MaskReg` predication, `LoadAlign`/`StoreAlign`, arch-dispatched via `__NPU_ARCH__` |
+| **SIMT-API** | ✗ absent | ✓ 21 files + `dav_c310/` backend | CUDA-like per-thread scalar. Per-thread values, atomics on `__gm__`/`__ubuf__`, warp-level primitives |
+
+Canonical example — same op (`Relu`) in each style:
+
+```cpp
+// 910b basic_api (dav_c220)
+template <typename T>
+void ReluIntrinsicsImpl(__ubuf__ T* dst, __ubuf__ T* src,
+                        uint8_t repeatTime, const UnaryRepeatParams& p) {
+    vrelu(dst, src, repeatTime,
+          p.dstBlkStride, p.srcBlkStride, p.dstRepStride, p.srcRepStride);
+}
+
+// 950 MicroAPI (micro_api/dav_c310)
+namespace MicroAPI {
+template <typename T, MaskMergeMode mode, typename U>
+void Relu(U& dstReg, U& srcReg, MaskReg& mask) {      // U = RegTensor<T>
+    ReluImpl<T, mode, U>(dstReg, srcReg, mask);
+}
+}
+
+// 950 SIMT-API (simt_api/dav_c310)
+template <typename T>
+T AbsImpl(T x) { return (x < 0) ? -x : x; }           // scalar on thread
+```
+
+A kernel written against MicroAPI or SIMT-API **will not compile** for 910b —
+both surfaces are 950-exclusive and both require the c310 build-mode. Choosing
+a surface is therefore a portability decision a DSL must make explicit.
 
 ##### basic_api on c310 — what changed
 
