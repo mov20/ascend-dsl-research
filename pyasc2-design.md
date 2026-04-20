@@ -8,8 +8,14 @@
   - [2.2 Ping-Pong (Double Buffering)](#22-ping-pong-double-buffering)
   - [2.3 UB Memory Allocation and Reuse](#23-ub-memory-allocation-and-reuse)
   - [2.4 Hardware Differences: 910B/C vs 950](#24-hardware-differences-910bc-vs-950)
+    - [2.4.1 Identity and SDK Layout](#241-identity-and-sdk-layout)
+    - [2.4.2 Three API Surfaces on 950](#242-three-api-surfaces-on-950)
+    - [2.4.3 Hardware Capability Deltas](#243-hardware-capability-deltas)
+    - [2.4.4 Implications for the Three DSL Challenges](#244-implications-for-the-three-dsl-challenges)
 - [3. Programming Model Analysis](#3-programming-model-analysis)
   - [3.1 AscendC](#31-ascendc)
+    - [3.1.1 AscendC on 910B/C](#311-ascendc-on-910bc)
+    - [3.1.2 AscendC on 950](#312-ascendc-on-950)
   - [3.2 Triton](#32-triton)
   - [3.3 cuTile](#33-cutile)
   - [3.4 TileLang-Ascend](#34-tilelang-ascend)
@@ -64,24 +70,141 @@ validated at compile time.
 
 ### 2.4 Hardware Differences: 910B/C vs 950
 
-> *TODO: Partial information — to be updated as more documentation becomes available.*
+**910C** is two 910B dies in one package — same Da Vinci architecture, same AIC/AIV
+model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 
-**910C** — two 910B dies in one package. Same Da Vinci architecture, AIC/AIV model unchanged.
+950 is not an incremental refresh of 910b — it introduces a new build target,
+a new ISA, two new programming surfaces, and new hardware capabilities (GM atomics,
+register-addressable SIMD, kernel-side printf). Findings below are derived from
+inspection of the CANN 9.0.0-beta.1 SDK. <sup>[[58]](#ref-58)</sup>
 
-**950 (Ascend A5)** — new architecture with changes relevant to DSL design:
+#### 2.4.1 Identity and SDK Layout
 
-- **AIC↔AIV data transfer via TPUSH/TPOP**: hardware instructions implementing
-  a tag-based dual-channel FIFO between Cube and Vector cores. On 910B/C
-  (PLATFORM_A2A3), ring buffer lives in Global Memory — DMA in and out.
-  On 950 (PLATFORM_A5), ring buffer lives in consumer's on-chip SRAM —
-  **zero-copy**. This fundamentally changes the cost of Cube↔Vector pipelines.
+Three parallel identifiers are used for the same chip across the SDK:
+
+| Layer | Identifier |
+|---|---|
+| SoC / platform name | `Ascend950`, `Ascend950PR_<n>` (production), `Ascend950DT_<n>` (development) — 32 SKUs total |
+| Build-mode target (compiler) | **`c310`** when the SoC is in `ascend950_list` |
+| Low-level ISA variant | **`v300`** (kernel header suffix `*_v300_impl.h`) |
+
+Lineage: `v100`=310, `v200`=910, `v220`=910b, **`v300`=950**; build-mode
+`c100` → `c220` → **`c310`**. Default SoC used by out-of-tree builds:
+`Ascend950PR_9599`. Per-SKU variance is confined to runtime `.ini` profiles
+— the programming model is single-target. <sup>[[58]](#ref-58)</sup>
+
+950 kernel code lives primarily under
+`cann-asc-devkit_9.0.0-beta.1/x86_64-linux/asc/impl/`, split by API surface
+(`basic_api/`, `adv_api/`, `micro_api/`, `simt_api/`, `c_api/`), each with
+per-arch subdirs (`dav_c220/`, `dav_c310/`, …).
+
+#### 2.4.2 Three API Surfaces on 950
+
+AscendC on 950 is not a single programming model; it is three stacked surfaces,
+two of which are brand-new: <sup>[[58]](#ref-58)</sup>
+
+| Surface | 910b (c220) | 950 (c310) | Style |
+|---|---|---|---|
+| **basic_api** | ✓ 35 impl files | ✓ 39 impl files | Hardware intrinsics, memory-centric (`__ubuf__` ptrs + explicit `repeatTime` / `BlkStride` / `RepStride`) |
+| **MicroAPI** | ✗ absent | ✓ 20 interface files + `dav_c310/` backend | Register-tensor SIMD functional. `RegTensor<T>` values, `MaskReg` predication, `LoadAlign`/`StoreAlign`, arch-dispatched via `__NPU_ARCH__` |
+| **SIMT-API** | ✗ absent | ✓ 21 files + `dav_c310/` backend | CUDA-like per-thread scalar. Per-thread values, atomics on `__gm__`/`__ubuf__`, warp-level primitives |
+
+Canonical example — same op (`Relu`) in each style:
+
+```cpp
+// 910b basic_api (dav_c220)
+template <typename T>
+void ReluIntrinsicsImpl(__ubuf__ T* dst, __ubuf__ T* src,
+                        uint8_t repeatTime, const UnaryRepeatParams& p) {
+    vrelu(dst, src, repeatTime,
+          p.dstBlkStride, p.srcBlkStride, p.dstRepStride, p.srcRepStride);
+}
+
+// 950 MicroAPI (micro_api/dav_c310)
+namespace MicroAPI {
+template <typename T, MaskMergeMode mode, typename U>
+void Relu(U& dstReg, U& srcReg, MaskReg& mask) {      // U = RegTensor<T>
+    ReluImpl<T, mode, U>(dstReg, srcReg, mask);
+}
+}
+
+// 950 SIMT-API (simt_api/dav_c310)
+template <typename T>
+T AbsImpl(T x) { return (x < 0) ? -x : x; }           // scalar on thread
+```
+
+A kernel written against MicroAPI or SIMT-API **will not compile** for 910b —
+both surfaces are 950-exclusive and both require the c310 build-mode. Choosing
+a surface is therefore a portability decision a DSL must make explicit.
+
+#### 2.4.3 Hardware Capability Deltas
+
+The capability deltas below are visible in the c310 source tree and are directly
+relevant to DSL design: <sup>[[58]](#ref-58)</sup>
+
+- **Register file is first-class addressable.** MicroAPI exposes `RegTensor<T>`,
+  `MaskReg`, `LoadAlign`/`StoreAlign`. Softmax was moved from `membase` to
+  `regbase` (7 files rewritten end-to-end, including `softmax_flashv2` and
+  `softmax_flashv3`) — a strong signal that the register file changed enough
+  to make the memory-based approach uneconomical.
+- **Global-memory atomics (new hardware).** 910b has no atomic impl file
+  anywhere in the SDK. 950 ships `AtomicCAS` / `AtomicAdd` / `AtomicMax` /
+  `AtomicMin` / `AtomicOr` / `AtomicAnd` / `AtomicXor` as compiler intrinsics
+  (`bisheng::cce::simt::atomic*`), with overloads for both `__gm__` and
+  `__ubuf__` pointers
+  (`asc/impl/simt_api/dav_c310/kernel_simt_atomic_impl.h`).
+- **Low-precision matmul first-class.** New `kernel_operator_mm_bitmode_impl.h`;
+  `kernel_operator_mm_impl.h` grew 673 → 1418 lines (c220 → c310).
+- **Type-conversion expansion.** `kernel_operator_vec_vconv_impl.h` grew
+  1170 → 3161 lines (~3×), consistent with new dtype matrix for MXFP4 / MXFP8 /
+  HiF8 / saturating casts (`kernel_simt_cast_sat_impl.h`).
+- **Kernel-side `print`.** New `kernel_operator_print_impl.h` — debugging
+  ergonomics win and evidence the runtime now supports streaming data back
+  from kernel code to host.
+- **Cross-core comm gained a GM-resident path.** `kfc/` adds three new GM
+  variants (`kfc_comm_client_gm.h`, `kfc_comm_server_gm.h`, `kfc_comm_gm.h`),
+  giving cube-unit cross-talk a GM-mediated transport in addition to the
+  on-chip flag-based channel.
+- **AIC↔AIV ring buffer moves on-chip.** TPUSH/TPOP implements a tag-based
+  dual-channel FIFO between Cube and Vector cores. On 910B/C (`PLATFORM_A2A3`)
+  the ring buffer lives in Global Memory — DMA in and out. On 950
+  (`PLATFORM_A5`) the ring buffer lives in the consumer's on-chip SRAM
+  (UB for Vector consumer, L1 for Cube consumer) — **zero-copy**: the consumer
+  dereferences slot data directly. <sup>[[4]](#ref-4)</sup>
+- **Cross-core address resolution.** On-chip ring-buffer placement creates
+  a visibility problem: the producer needs the consumer's SRAM base to DMA
+  into. Solved via per-function `CONSUMER_BUFFER_BASE` constants plus an
+  allocator-reserved region in the consumer's SRAM; the base is passed as
+  an explicit argument to `aic_initialize_pipe` / `aiv_initialize_pipe`.
 - **Memory access granularity**: 512 bytes → 128 bytes.
-- **New data formats**: MXFP4, MXFP8, HiF8 (in addition to FP16/BF16/INT8).
-- **Pipeline tuning**: different buffer allocation strategy and pipeline depth
-  vs. A2/A3 (confirmed in PTO FA kernel for A5). > *TODO: Partial information — to be updated as more documentation becomes available.*
+- **New data formats**: MXFP4, MXFP8, HiF8 (in addition to FP16 / BF16 / INT8).
+- **Sync model at the basic_api level is unchanged.** `set_flag` / `wait_flag`
+  between `PIPE_MTE2` and `PIPE_V` remain explicit (confirmed in PTO engram
+  kernel source for A5). <sup>[[8]](#ref-8)</sup>
 
-- **Sync model**: `set_flag`/`wait_flag` between PIPE_MTE2 and PIPE_V are still
-  explicit even on A5 (confirmed in PTO engram kernel source).
+#### 2.4.4 Implications for the Three DSL Challenges
+
+- **Sync insertion.** Three surfaces now coexist with different sync models:
+  basic_api keeps explicit `set_flag` / `wait_flag` and TPipe events;
+  MicroAPI adds `MaskReg` predication at the register-tile granularity
+  (masks are not barriers — barriers remain basic_api's responsibility);
+  SIMT-API adds warp-level primitives and GM atomics for fine-grained sync.
+  A DSL must decide which model to expose (or hide) and stay coherent across
+  surfaces.
+- **Ping-pong.** The on-chip TPUSH/TPOP ring buffer on A5 removes the GM
+  round-trip for Cube↔Vector handoff — the cost model of a pipelined stage
+  shifts substantially. On MicroAPI, pipelining is a concern at register-tile
+  granularity, not UB-tile granularity, because loops iterate over `RegTensor`
+  chunks.
+- **UB memory allocation.** Two new address-spaces to plan: the register file
+  (first-class in MicroAPI) and the reserved consumer SRAM segment for the
+  TPUSH/TPOP ring buffer (on A5, a fixed exclusion zone inside UB or L1).
+  The DSL allocator must model both.
+- **Portability.** Targeting only basic_api is the conservative choice but
+  forfeits 950's register-file throughput and GM atomics. Targeting MicroAPI
+  reaches the register file but requires c310 (950-only builds). A DSL that
+  claims to target 910b + 950 must lower to basic_api only, or implement
+  per-target lowering.
 
 ## 3. Programming Model Analysis
 
@@ -91,7 +214,21 @@ AscendC is the official C++ kernel language for Ascend NPU and the compilation
 target for PyAsc2. Understanding how it handles the three key challenges defines
 the baseline that PyAsc2 must improve upon.
 
-#### Sync Insertion
+AscendC is not a single programming model — it has evolved with the hardware.
+On 910B/C the only surface is `basic_api` (TPipe/TQue, memory-centric). On 950
+two additional surfaces appeared — MicroAPI (register-tensor SIMD with
+predication) and SIMT-API (CUDA-like per-thread scalar) — neither of which
+compiles for 910b (see §2.4.2). We therefore split this section along the
+910B/C vs 950 axis: §3.1.1 covers `basic_api` behavior that applies to both
+targets (content written against 910b c220, unchanged on c310); §3.1.2 covers
+what is new and 950-exclusive.
+
+#### 3.1.1 AscendC on 910B/C
+
+On 910B/C there is one surface: `basic_api` via build-mode `c220`. The three
+key challenges are analyzed below in this surface.
+
+##### Sync Insertion
 
 AscendC exposes synchronization directly to the user via `TPipe` and `TQue`.
 Every data transfer requires explicit `EnQue`/`DeQue` calls; every pipeline
@@ -129,7 +266,7 @@ Missing or misplaced EnQue/DeQue / SetEventId/WaitEventId causes silent data haz
 
 **Conclusion**: AscendC doesn't solve the challenge — it exposes it. The user is responsible for every barrier manually. This is a source of bugs.
 
-#### Ping-pong
+##### Ping-pong
 
 ```cpp
 // Queue depth=2: two UB slots (ping + pong)
@@ -155,7 +292,7 @@ Depth 2 = two slots in UB. While Vector works on ping, MTE2 loads into pong. But
 
 **Conclusion**: AscendC supports ping-pong, but requires manual orchestration. No automatic loop body partitioning.
 
-#### UB Memory Allocation and Reuse
+##### UB Memory Allocation and Reuse
 
 ```cpp
 TPipe pipe;
@@ -179,6 +316,151 @@ for (int i = 0; i < num_tiles; i++) {
 
 **Conclusion**: AscendC requires the user to manually plan UB layout — sizing each buffer, choosing queue depths, and validating the total fit within 256 KB. Exceeding the limit causes silent memory corruption at runtime. The compiler provides no assistance.
 
+#### 3.1.2 AscendC on 950
+
+On 950, `basic_api` still exists — the same `TPipe` / `TQue` / `LocalTensor`
+programming style analyzed in §3.1.1 is available via build-mode `c310`, and
+the three-challenge analysis above carries over unchanged. What is new on 950
+are (a) c310 deltas inside `basic_api`, and (b) two brand-new API surfaces
+(MicroAPI, SIMT-API) that are unavailable on 910b. <sup>[[58]](#ref-58)</sup>
+
+##### basic_api on c310 — what changed
+
+The programming model is the same; the surface gained capabilities:
+
+- **New files in c310:** `kernel_operator_atomic_impl.h` (GM/UB atomics,
+  mirrored from SIMT-API into basic_api), `kernel_operator_print_impl.h`
+  (kernel-side `printf`), `kernel_operator_mm_bitmode_impl.h` (low-precision
+  matmul), `kernel_tpipe_impl_c310{,_vec}.h` (950-specific TPipe backend),
+  continuous-layout variants (`vec_binary_continuous_impl.h`,
+  `vec_compare_continuous_impl.h`), and `vec_template_impl.h`.
+- **Growth in shared files (c220 → c310, line count):**
+  `vec_vconv_impl.h` 1170 → 3161 (+1991),
+  `vec_cmp_impl.h` 356 → 1486 (+1130),
+  `vec_binary_scalar_impl.h` 411 → 1325 (+914),
+  `mm_impl.h` 673 → 1418 (+745),
+  `data_copy_impl.h` 1060 → 1627 (+567),
+  `vec_reduce_impl.h` 932 → 1466 (+534).
+- **Files dropped in c310 (consolidated elsewhere):** `fixpipe_v2_impl.h`
+  (superseded), `vec_cmpsel_impl.h` (split into `vec_cmp_impl.h` +
+  `vec_sel_impl.h`), `set_spr_impl.h` (moved to shared `sys_var`), and
+  `cube_others_impl.h` / `vec_others_impl.h` (absorbed).
+- **Concrete algorithmic signal in basic_api:** the c310 version of
+  `vec_unary_impl.h` ships a software fast-inverse rsqrt (Newton-Raphson
+  on a bit-cast seed) — kernels that previously had to write these by hand
+  on 910b can now treat them as stock library.
+
+The three-challenge baseline (manual sync, manual ping-pong, manual UB layout)
+is unchanged at the basic_api surface on 950. The deltas above widen the set
+of primitives but not the programming style.
+
+##### MicroAPI — register-tensor SIMD with predication (950-exclusive)
+
+MicroAPI operates on **register tensors**, not memory. The primitives take
+`RegTensor<T>` values, a first-class `MaskReg` for predication, and
+`LoadAlign` / `StoreAlign` to move data between UB and registers. The
+MicroAPI interface dispatches to per-arch backends at compile time via
+`__NPU_ARCH__`:
+
+```cpp
+// micro_api/kernel_micro_vec_unary_intf_impl.h
+#if   __NPU_ARCH__ == 3003
+#include "micro_api/dav_l300/kernel_micro_vec_unary_impl.h"
+#elif __NPU_ARCH__ == 3113
+#include "micro_api/dav_l311/kernel_micro_vec_unary_impl.h"
+#elif __NPU_ARCH__ == 5102
+#include "micro_api/dav_m510/kernel_micro_vec_unary_impl.h"
+#else
+#include "micro_api/dav_c310/kernel_micro_vec_unary_impl.h"   // 950
+#endif
+
+namespace MicroAPI {
+template <typename T, MaskMergeMode mode, typename U>
+__simd_callee__ inline void Relu(U& dstReg, U& srcReg, MaskReg& mask) {
+    ReluImpl<T, mode, U>(dstReg, srcReg, mask);
+}
+}
+```
+
+The **caller pattern** shipped in c310's `basic_api/dav_c310/kernel_operator_vec_unary_impl.h`
+shows how MicroAPI ops compose into a kernel: a loop iterates over register-tile
+chunks, each chunk loaded via `LoadAlign`, processed under a predication mask,
+and stored via `StoreAlign`.
+
+```cpp
+for (uint16_t i = 0; i < repeatTime; ++i) {
+    mask = MicroAPI::UpdateMask<T, RegType::trait>(sreg);
+    MicroAPI::LoadAlign(srcReg, src + i * repeatStride);
+    func(dstReg, srcReg, mask);                        // e.g. MicroAPI::Relu
+    MicroAPI::StoreAlign(dst + i * repeatStride, dstReg, mask);
+}
+```
+
+**Sync Insertion.** MicroAPI does not introduce automatic barriers. The
+`MaskReg` predication controls which lanes of a register tile participate in
+an op — it is not a barrier. Cross-unit synchronization between MTE/Vector/Cube
+pipelines still relies on `set_flag` / `wait_flag` and TPipe events from
+`basic_api`. **Conclusion**: sync is still the user's responsibility, and
+MicroAPI kernels typically still layer over basic_api for data movement.
+
+**Ping-pong.** Pipelining shifts from UB-tile granularity to register-tile
+granularity. The caller loop above runs over `repeatTime` register chunks per
+UB tile; overlap between load (MTE2) and compute (Vector) is still achieved
+via ping-pong at the UB level (basic_api), but within a UB tile, MicroAPI adds
+a second axis of latency hiding via chunked register operations.
+**Conclusion**: MicroAPI does not replace UB-level ping-pong; it adds a finer
+pipelining axis below it, both still manual.
+
+**UB Memory Allocation.** MicroAPI introduces the register file as a planned
+address space. `RegTensor<T>` values occupy vector registers; `LoadAlign` /
+`StoreAlign` are the explicit move operations between UB and registers. UB
+layout itself is still managed by the basic_api `TPipe` / `TQue` machinery.
+**Conclusion**: UB allocation remains a basic_api concern; MicroAPI adds a
+second-tier register-allocation problem that the programmer (or a DSL compiler)
+must solve — evidenced by softmax's end-to-end rewrite from `membase/` to
+`regbase/` on 950.
+
+**Overall**: MicroAPI is a new surface *below* basic_api, not a replacement.
+It exposes the register file and predication; it does not automate sync or
+memory planning.
+
+##### SIMT-API — brief note (not a pyasc2 target)
+
+SIMT-API is a CUDA-like per-thread scalar surface (`AbsImpl`, `AtomicCasImpl`,
+warp-level primitives, a CPU-debug shim). It is 950-exclusive and represents
+a different programming model entirely: instead of tile-level intrinsics it
+exposes per-thread operations, with the compiler and hardware responsible for
+SIMT-style lane grouping and latency hiding.
+
+**pyasc2 does not target SIMT-API.** SIMT-style per-thread code on Ascend is
+not expected to reach the performance ceiling needed by a pyasc2 kernel; the
+DSL's goal is ≥90% of peak hardware potential and SIMT lowers that ceiling by
+giving up tile-level orchestration. SIMT-API is noted here for completeness
+and because its atomics are mirrored into basic_api.
+
+##### Evidence the 950 programming model shifted
+
+- **Softmax rewritten end-to-end.** 7 files under
+  `adv_api/detail/activation/softmax/regbase/{v300,c310}/` replace the
+  `membase/v220/` implementation. Flash-Attention softmax v2 and v3 were both
+  rewritten against the register-based model.
+- **`mm_impl.h` more than doubled** (673 → 1418 lines).
+- **`vec_vconv_impl.h` tripled** (1170 → 3161 lines) — new dtype matrix
+  consistent with MXFP4 / MXFP8 / HiF8 and saturating casts.
+- **Only 3 explicit `v300` adv_api files exist** (`math/xor/xor_v300_impl.h`,
+  `math/floor/floor_v300_impl.h`, and the softmax regbase tree). Most adv_api
+  ops reuse the generic (non-suffixed) implementations via the `c310`
+  build-mode path; softmax is the outlier because its algorithm changed.
+
+##### pyasc2 implication
+
+pyasc2 targets `basic_api` (baseline, portable across 910b and 950) and
+MicroAPI (950-only, for register-file throughput and the new dtype matrix).
+SIMT-API is out of scope. A pyasc2 program targeting 950 must lower to a
+c310 build that mixes basic_api for data movement and TPipe orchestration with
+MicroAPI for compute inside tiles; targeting 910b lowers to basic_api only
+(c220). This surface split is the core portability decision §4 must make
+explicit.
 
 ### 3.2 Triton
 
@@ -984,3 +1266,4 @@ should be Ascend-native from the start.
 | 55 | Mojo GPU fundamentals — kernel model, thread indexing | https://docs.modular.com/mojo/manual/gpu/fundamentals/ |
 | 56 | Structured Mojo Kernels Part 1 — design philosophy, performance | https://www.modular.com/blog/structured-mojo-kernels-part-1-peak-performance-half-the-code |
 | 57 | TileTensor — parametric tile-level tensors in Mojo | https://www.modular.com/blog/tiletensor-part-1-safer-more-efficient-gpu-kernels |
+| 58 | CANN 9.0.0-beta.1 SDK findings (internal) — 950/A5 programming model, extracted from SDK source walk of `Ascend-cann_9.0.0-beta.1_linux-x86_64.run` | `/Users/oleg/work/260418_cann9beta_950/ascend950-programming-model-findings.md` |
