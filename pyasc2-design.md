@@ -80,25 +80,16 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 950 adds the following hardware capabilities relative to 910b: <sup>[[58]](#ref-58)</sup>
 
-- **Register file is first-class addressable.** The vector register file is
-  now exposed as a planned address space for tile computation. Softmax —
-  including Flash-Attention v2 and v3 — was rewritten end-to-end from a
-  memory-based form to a register-based form, a strong signal the register
-  file changed enough to make the memory-based approach uneconomical.
+- **Register file is first-class.** The vector register file is
+  now exposed
 - **Global-memory atomics (new hardware).** 950 adds hardware atomics —
   CAS, Add, Max, Min, Or, And, Xor — operating on both global memory and UB.
-  910b has no atomic support at this level.
-- **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
+  - **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
   a dedicated hardware path, consistent with the new MX-family data formats
   (below).
 - **New data formats.** MXFP4, MXFP8, HiF8 (in addition to FP16 / BF16 / INT8);
   the type-conversion matrix grew roughly 3× to cover the new dtypes,
   including saturating casts.
-- **Kernel-side debug output.** Kernels can now stream structured data back
-  to the host from inside a running kernel.
-- **Cross-core comm gained a GM-resident path.** AICore-to-AICore communication
-  now has a GM-mediated transport in addition to the on-chip flag-based
-  channel.
 - **AIC↔AIV ring buffer moves on-chip.** The tag-based dual-channel FIFO
   between Cube and Vector cores (TPUSH/TPOP) changed backing location: on
   910B/C the ring buffer lives in Global Memory (DMA in and out), on 950 it
@@ -292,33 +283,11 @@ a surface is therefore a portability decision a DSL must make explicit.
 
 ##### basic_api on c310 — what changed
 
-The programming model is the same; the surface gained capabilities:
-
-- **New files in c310:** `kernel_operator_atomic_impl.h` (GM/UB atomics,
-  mirrored from SIMT-API into basic_api), `kernel_operator_print_impl.h`
-  (kernel-side `printf`), `kernel_operator_mm_bitmode_impl.h` (low-precision
-  matmul), `kernel_tpipe_impl_c310{,_vec}.h` (950-specific TPipe backend),
-  continuous-layout variants (`vec_binary_continuous_impl.h`,
-  `vec_compare_continuous_impl.h`), and `vec_template_impl.h`.
-- **Growth in shared files (c220 → c310, line count):**
-  `vec_vconv_impl.h` 1170 → 3161 (+1991),
-  `vec_cmp_impl.h` 356 → 1486 (+1130),
-  `vec_binary_scalar_impl.h` 411 → 1325 (+914),
-  `mm_impl.h` 673 → 1418 (+745),
-  `data_copy_impl.h` 1060 → 1627 (+567),
-  `vec_reduce_impl.h` 932 → 1466 (+534).
-- **Files dropped in c310 (consolidated elsewhere):** `fixpipe_v2_impl.h`
-  (superseded), `vec_cmpsel_impl.h` (split into `vec_cmp_impl.h` +
-  `vec_sel_impl.h`), `set_spr_impl.h` (moved to shared `sys_var`), and
-  `cube_others_impl.h` / `vec_others_impl.h` (absorbed).
-- **Concrete algorithmic signal in basic_api:** the c310 version of
-  `vec_unary_impl.h` ships a software fast-inverse rsqrt (Newton-Raphson
-  on a bit-cast seed) — kernels that previously had to write these by hand
-  on 910b can now treat them as stock library.
+The programming model is the same; the surface  gained capabilities:
+**TODO-Claude** dont like naming abstraction level by "surfaces". Change across doc to "level" 
 
 The three-challenge baseline (manual sync, manual ping-pong, manual UB layout)
-is unchanged at the basic_api surface on 950. The deltas above widen the set
-of primitives but not the programming style.
+is unchanged at the basic_api surface on 950. 
 
 ##### MicroAPI — register-tensor SIMD with predication (950-exclusive)
 
@@ -327,7 +296,7 @@ MicroAPI operates on **register tensors**, not memory. The primitives take
 `LoadAlign` / `StoreAlign` to move data between UB and registers. The
 MicroAPI interface dispatches to per-arch backends at compile time via
 `__NPU_ARCH__`:
-
+**TODO-Claude** Add more complex code example than just relu. at least softmax
 ```cpp
 // micro_api/kernel_micro_vec_unary_intf_impl.h
 #if   __NPU_ARCH__ == 3003
@@ -403,20 +372,6 @@ not expected to reach the performance ceiling needed by a pyasc2 kernel; the
 DSL's goal is ≥90% of peak hardware potential and SIMT lowers that ceiling by
 giving up tile-level orchestration. SIMT-API is noted here for completeness
 and because its atomics are mirrored into basic_api.
-
-##### Evidence the 950 programming model shifted
-
-- **Softmax rewritten end-to-end.** 7 files under
-  `adv_api/detail/activation/softmax/regbase/{v300,c310}/` replace the
-  `membase/v220/` implementation. Flash-Attention softmax v2 and v3 were both
-  rewritten against the register-based model.
-- **`mm_impl.h` more than doubled** (673 → 1418 lines).
-- **`vec_vconv_impl.h` tripled** (1170 → 3161 lines) — new dtype matrix
-  consistent with MXFP4 / MXFP8 / HiF8 and saturating casts.
-- **Only 3 explicit `v300` adv_api files exist** (`math/xor/xor_v300_impl.h`,
-  `math/floor/floor_v300_impl.h`, and the softmax regbase tree). Most adv_api
-  ops reuse the generic (non-suffixed) implementations via the `c310`
-  build-mode path; softmax is the outlier because its algorithm changed.
 
 ##### pyasc2 implication
 
