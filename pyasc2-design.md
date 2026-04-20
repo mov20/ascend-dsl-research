@@ -74,7 +74,7 @@ model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 950 is not an incremental refresh of 910b. It introduces new hardware capabilities
 (GM atomics, register-addressable SIMD, kernel-side printf) and two new AscendC
 programming surfaces (covered in §3.1.2). Findings below are derived from inspection
-of the CANN 9.0.0-beta.1 SDK. <sup>[[58]](#ref-58)</sup>
+of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.1 Hardware Capability Deltas
 
@@ -1241,4 +1241,4 @@ should be Ascend-native from the start.
 | 55 | Mojo GPU fundamentals — kernel model, thread indexing | https://docs.modular.com/mojo/manual/gpu/fundamentals/ |
 | 56 | Structured Mojo Kernels Part 1 — design philosophy, performance | https://www.modular.com/blog/structured-mojo-kernels-part-1-peak-performance-half-the-code |
 | 57 | TileTensor — parametric tile-level tensors in Mojo | https://www.modular.com/blog/tiletensor-part-1-safer-more-efficient-gpu-kernels |
-| 58 | CANN 9.0.0-beta.1 SDK findings (internal) — 950/A5 programming model, extracted from SDK source walk of `Ascend-cann_9.0.0-beta.1_linux-x86_64.run` | `/Users/oleg/work/260418_cann9beta_950/ascend950-programming-model-findings.md` |
+| 58 | CANN 9 SDK preview — 950/A5 programming model findings (internal notes from SDK source inspection) | — |
