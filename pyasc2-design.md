@@ -73,18 +73,18 @@ model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 
 950 is not an incremental refresh of 910b. It introduces new hardware capabilities
 (GM atomics, register-addressable SIMD, kernel-side printf) and two new AscendC
-programming surfaces (covered in §3.1.2). Findings below are derived from inspection
+programming levels (covered in §3.1.2). Findings below are derived from inspection
 of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.1 Hardware Capability Deltas
 
 950 adds the following hardware capabilities relative to 910b: <sup>[[58]](#ref-58)</sup>
 
-- **Register file is first-class.** The vector register file is
-  now exposed
+- **Register file is first-class.** The vector register file is now exposed
+  as a planned address space for tile computation.
 - **Global-memory atomics (new hardware).** 950 adds hardware atomics —
   CAS, Add, Max, Min, Or, And, Xor — operating on both global memory and UB.
-  - **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
+- **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
   a dedicated hardware path, consistent with the new MX-family data formats
   (below).
 - **New data formats.** MXFP4, MXFP8, HiF8 (in addition to FP16 / BF16 / INT8);
@@ -105,13 +105,13 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.2 Implications for the Three DSL Challenges
 
-- **Sync insertion.** Three surfaces now coexist with different sync models:
+- **Sync insertion.** Three levels now coexist with different sync models:
   basic_api keeps explicit `set_flag` / `wait_flag` and TPipe events;
   MicroAPI adds `MaskReg` predication at the register-tile granularity
   (masks are not barriers — barriers remain basic_api's responsibility);
   SIMT-API adds warp-level primitives and GM atomics for fine-grained sync.
   A DSL must decide which model to expose (or hide) and stay coherent across
-  surfaces.
+  levels.
 - **Ping-pong.** The on-chip TPUSH/TPOP ring buffer on A5 removes the GM
   round-trip for Cube↔Vector handoff — the cost model of a pipelined stage
   shifts substantially. On MicroAPI, pipelining is a concern at register-tile
@@ -136,8 +136,8 @@ target for PyAsc2. Understanding how it handles the three key challenges defines
 the baseline that PyAsc2 must improve upon.
 
 AscendC is not a single programming model — it has evolved with the hardware.
-On 910B/C the only surface is `basic_api` (TPipe/TQue, memory-centric). On 950
-two additional surfaces appeared — MicroAPI (register-tensor SIMD with
+On 910B/C the only level is `basic_api` (TPipe/TQue, memory-centric). On 950
+two additional levels appeared — MicroAPI (register-tensor SIMD with
 predication) and SIMT-API (CUDA-like per-thread scalar) — neither of which
 compiles for 910b. We therefore split this section along the 910B/C vs 950
 axis: §3.1.1 covers `basic_api` behavior that applies to both targets (content
@@ -146,8 +146,8 @@ written against 910b c220, unchanged on c310); §3.1.2 covers what is new and
 
 #### 3.1.1 AscendC on 910B/C
 
-On 910B/C there is one surface: `basic_api` via build-mode `c220`. The three
-key challenges are analyzed below in this surface.
+On 910B/C there is one level: `basic_api` via build-mode `c220`. The three
+key challenges are analyzed below in this level.
 
 ##### Sync Insertion
 
@@ -242,12 +242,12 @@ for (int i = 0; i < num_tiles; i++) {
 On 950, `basic_api` still exists — the same `TPipe` / `TQue` / `LocalTensor`
 programming style analyzed in §3.1.1 is available via build-mode `c310`, and
 the three-challenge analysis above carries over unchanged. What is new on 950
-are (a) c310 deltas inside `basic_api`, and (b) two brand-new API surfaces
+are (a) c310 deltas inside `basic_api`, and (b) two brand-new API levels
 (MicroAPI, SIMT-API) that are unavailable on 910b. <sup>[[58]](#ref-58)</sup>
 
-The three surfaces stack as follows:
+The three levels stack as follows:
 
-| Surface | 910b (c220) | 950 (c310) | Style |
+| Level | 910b (c220) | 950 (c310) | Style |
 |---|---|---|---|
 | **basic_api** | ✓ 35 impl files | ✓ 39 impl files | Hardware intrinsics, memory-centric (`__ubuf__` ptrs + explicit `repeatTime` / `BlkStride` / `RepStride`) |
 | **MicroAPI** | ✗ absent | ✓ 20 interface files + `dav_c310/` backend | Register-tensor SIMD functional. `RegTensor<T>` values, `MaskReg` predication, `LoadAlign`/`StoreAlign`, arch-dispatched via `__NPU_ARCH__` |
@@ -278,16 +278,14 @@ T AbsImpl(T x) { return (x < 0) ? -x : x; }           // scalar on thread
 ```
 
 A kernel written against MicroAPI or SIMT-API **will not compile** for 910b —
-both surfaces are 950-exclusive and both require the c310 build-mode. Choosing
-a surface is therefore a portability decision a DSL must make explicit.
+both levels are 950-exclusive and both require the c310 build-mode. Choosing
+a level is therefore a portability decision a DSL must make explicit.
 
 ##### basic_api on c310 — what changed
 
-The programming model is the same; the surface  gained capabilities:
-**TODO-Claude** dont like naming abstraction level by "surfaces". Change across doc to "level" 
-
-The three-challenge baseline (manual sync, manual ping-pong, manual UB layout)
-is unchanged at the basic_api surface on 950. 
+The programming model and the three-challenge baseline (manual sync, manual
+ping-pong, manual UB layout) are unchanged at the basic_api level on 950 —
+the primitive set widened but the programming style did not.
 
 ##### MicroAPI — register-tensor SIMD with predication (950-exclusive)
 
@@ -296,7 +294,7 @@ MicroAPI operates on **register tensors**, not memory. The primitives take
 `LoadAlign` / `StoreAlign` to move data between UB and registers. The
 MicroAPI interface dispatches to per-arch backends at compile time via
 `__NPU_ARCH__`:
-**TODO-Claude** Add more complex code example than just relu. at least softmax
+
 ```cpp
 // micro_api/kernel_micro_vec_unary_intf_impl.h
 #if   __NPU_ARCH__ == 3003
@@ -331,6 +329,48 @@ for (uint16_t i = 0; i < repeatTime; ++i) {
 }
 ```
 
+A more substantial example — row-wise softmax over a UB tile — shows the
+MicroAPI style more clearly. On 950, softmax was rewritten from memory-based
+to register-based, taking advantage of the exposed register file:
+
+```cpp
+// Simple softmax with MicroAPI — 3 phases over register-tile chunks:
+// (1) row max, (2) exp(x - max) and accumulate sum, (3) divide by sum.
+MicroAPI::MaskReg preg = MicroAPI::CreateMask<uint32_t, MicroAPI::MaskPattern::ALL>();
+MicroAPI::RegTensor<float> srcVreg, maxVreg, sumVreg, tmpVreg;
+
+Duplicate(maxVreg, F32_NEG_INF);
+for (uint16_t j = 0; j < repeatTimes; ++j) {
+    MicroAPI::LoadAlign(srcVreg, srcUb + j * FLOAT_REPEAT_SIZE);
+    MicroAPI::Max(maxVreg, maxVreg, srcVreg, preg);
+}
+MicroAPI::ReduceMax(maxVreg, maxVreg, preg);            // register-level reduction
+
+Duplicate(sumVreg, 0.0f);
+for (uint16_t j = 0; j < repeatTimes; ++j) {
+    MicroAPI::LoadAlign(srcVreg, srcUb + j * FLOAT_REPEAT_SIZE);
+    MicroAPI::FusedExpSub(tmpVreg, srcVreg, maxVreg, preg);   // fused exp(x - max)
+    MicroAPI::StoreAlign(dstUb + j * FLOAT_REPEAT_SIZE, tmpVreg, preg);
+    MicroAPI::Add(sumVreg, sumVreg, tmpVreg, preg);
+}
+MicroAPI::ReduceSum(sumVreg, sumVreg, preg);
+
+for (uint16_t j = 0; j < repeatTimes; ++j) {
+    MicroAPI::LoadAlign(tmpVreg, dstUb + j * FLOAT_REPEAT_SIZE);
+    MicroAPI::Div(tmpVreg, tmpVreg, sumVreg, preg);
+    MicroAPI::StoreAlign(dstUb + j * FLOAT_REPEAT_SIZE, tmpVreg, preg);
+}
+```
+
+Three loops over `repeatTimes` register-tile chunks; inside each loop the
+values stay in vector registers (`RegTensor<float>`), with only `LoadAlign` /
+`StoreAlign` crossing the UB boundary. Two distinctive 950 primitives are
+visible: `ReduceMax` / `ReduceSum` perform reduction within a single register
+(cross-register reduction still needs the outer loop), and `FusedExpSub`
+collapses `exp(x - max)` into one op — the register file's capacity and the
+fused ISA make these chains cheap enough to stay register-resident, which
+is why softmax migrated off the memory-based path on 950. <sup>[[58]](#ref-58)</sup>
+
 **Sync Insertion.** MicroAPI does not introduce automatic barriers. The
 `MaskReg` predication controls which lanes of a register tile participate in
 an op — it is not a barrier. Cross-unit synchronization between MTE/Vector/Cube
@@ -355,13 +395,13 @@ second-tier register-allocation problem that the programmer (or a DSL compiler)
 must solve — evidenced by softmax's end-to-end rewrite from `membase/` to
 `regbase/` on 950.
 
-**Overall**: MicroAPI is a new surface *below* basic_api, not a replacement.
+**Overall**: MicroAPI is a new level *below* basic_api, not a replacement.
 It exposes the register file and predication; it does not automate sync or
 memory planning.
 
 ##### SIMT-API — brief note (not a pyasc2 target)
 
-SIMT-API is a CUDA-like per-thread scalar surface (`AbsImpl`, `AtomicCasImpl`,
+SIMT-API is a CUDA-like per-thread scalar level (`AbsImpl`, `AtomicCasImpl`,
 warp-level primitives, a CPU-debug shim). It is 950-exclusive and represents
 a different programming model entirely: instead of tile-level intrinsics it
 exposes per-thread operations, with the compiler and hardware responsible for
@@ -380,7 +420,7 @@ MicroAPI (950-only, for register-file throughput and the new dtype matrix).
 SIMT-API is out of scope. A pyasc2 program targeting 950 must lower to a
 c310 build that mixes basic_api for data movement and TPipe orchestration with
 MicroAPI for compute inside tiles; targeting 910b lowers to basic_api only
-(c220). This surface split is the core portability decision §4 must make
+(c220). This level split is the core portability decision §4 must make
 explicit.
 
 ### 3.2 Triton
