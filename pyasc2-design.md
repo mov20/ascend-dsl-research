@@ -78,48 +78,39 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.1 Hardware Capability Deltas
 
-The capability deltas below are visible in the c310 source tree and are directly
-relevant to DSL design: <sup>[[58]](#ref-58)</sup>
+950 adds the following hardware capabilities relative to 910b: <sup>[[58]](#ref-58)</sup>
 
-- **Register file is first-class addressable.** MicroAPI exposes `RegTensor<T>`,
-  `MaskReg`, `LoadAlign`/`StoreAlign`. Softmax was moved from `membase` to
-  `regbase` (7 files rewritten end-to-end, including `softmax_flashv2` and
-  `softmax_flashv3`) — a strong signal that the register file changed enough
-  to make the memory-based approach uneconomical.
-- **Global-memory atomics (new hardware).** 910b has no atomic impl file
-  anywhere in the SDK. 950 ships `AtomicCAS` / `AtomicAdd` / `AtomicMax` /
-  `AtomicMin` / `AtomicOr` / `AtomicAnd` / `AtomicXor` as compiler intrinsics
-  (`bisheng::cce::simt::atomic*`), with overloads for both `__gm__` and
-  `__ubuf__` pointers
-  (`asc/impl/simt_api/dav_c310/kernel_simt_atomic_impl.h`).
-- **Low-precision matmul first-class.** New `kernel_operator_mm_bitmode_impl.h`;
-  `kernel_operator_mm_impl.h` grew 673 → 1418 lines (c220 → c310).
-- **Type-conversion expansion.** `kernel_operator_vec_vconv_impl.h` grew
-  1170 → 3161 lines (~3×), consistent with new dtype matrix for MXFP4 / MXFP8 /
-  HiF8 / saturating casts (`kernel_simt_cast_sat_impl.h`).
-- **Kernel-side `print`.** New `kernel_operator_print_impl.h` — debugging
-  ergonomics win and evidence the runtime now supports streaming data back
-  from kernel code to host.
-- **Cross-core comm gained a GM-resident path.** `kfc/` adds three new GM
-  variants (`kfc_comm_client_gm.h`, `kfc_comm_server_gm.h`, `kfc_comm_gm.h`),
-  giving cube-unit cross-talk a GM-mediated transport in addition to the
-  on-chip flag-based channel.
-- **AIC↔AIV ring buffer moves on-chip.** TPUSH/TPOP implements a tag-based
-  dual-channel FIFO between Cube and Vector cores. On 910B/C (`PLATFORM_A2A3`)
-  the ring buffer lives in Global Memory — DMA in and out. On 950
-  (`PLATFORM_A5`) the ring buffer lives in the consumer's on-chip SRAM
-  (UB for Vector consumer, L1 for Cube consumer) — **zero-copy**: the consumer
+- **Register file is first-class addressable.** The vector register file is
+  now exposed as a planned address space for tile computation. Softmax —
+  including Flash-Attention v2 and v3 — was rewritten end-to-end from a
+  memory-based form to a register-based form, a strong signal the register
+  file changed enough to make the memory-based approach uneconomical.
+- **Global-memory atomics (new hardware).** 950 adds hardware atomics —
+  CAS, Add, Max, Min, Or, And, Xor — operating on both global memory and UB.
+  910b has no atomic support at this level.
+- **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
+  a dedicated hardware path, consistent with the new MX-family data formats
+  (below).
+- **New data formats.** MXFP4, MXFP8, HiF8 (in addition to FP16 / BF16 / INT8);
+  the type-conversion matrix grew roughly 3× to cover the new dtypes,
+  including saturating casts.
+- **Kernel-side debug output.** Kernels can now stream structured data back
+  to the host from inside a running kernel.
+- **Cross-core comm gained a GM-resident path.** AICore-to-AICore communication
+  now has a GM-mediated transport in addition to the on-chip flag-based
+  channel.
+- **AIC↔AIV ring buffer moves on-chip.** The tag-based dual-channel FIFO
+  between Cube and Vector cores (TPUSH/TPOP) changed backing location: on
+  910B/C the ring buffer lives in Global Memory (DMA in and out), on 950 it
+  lives in the consumer's on-chip SRAM — **zero-copy**: the consumer
   dereferences slot data directly. <sup>[[4]](#ref-4)</sup>
-- **Cross-core address resolution.** On-chip ring-buffer placement creates
-  a visibility problem: the producer needs the consumer's SRAM base to DMA
-  into. Solved via per-function `CONSUMER_BUFFER_BASE` constants plus an
-  allocator-reserved region in the consumer's SRAM; the base is passed as
-  an explicit argument to `aic_initialize_pipe` / `aiv_initialize_pipe`.
+- **Cross-core address resolution.** On-chip ring-buffer placement means
+  the producer must know the consumer's SRAM base. Resolved via per-function
+  constants plus an allocator-reserved region in the consumer's SRAM.
 - **Memory access granularity**: 512 bytes → 128 bytes.
-- **New data formats**: MXFP4, MXFP8, HiF8 (in addition to FP16 / BF16 / INT8).
-- **Sync model at the basic_api level is unchanged.** `set_flag` / `wait_flag`
-  between `PIPE_MTE2` and `PIPE_V` remain explicit (confirmed in PTO engram
-  kernel source for A5). <sup>[[8]](#ref-8)</sup>
+- **Pipeline sync unchanged at the hardware level.** Handshake between
+  memory engines and vector cores remains explicit — no new hardware
+  barriers.
 
 #### 2.4.2 Implications for the Three DSL Challenges
 
