@@ -71,10 +71,10 @@ validated at compile time.
 **910C** is two 910B dies in one package — same Da Vinci architecture, same AIC/AIV
 model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 
-950 is not an incremental refresh of 910b. It introduces new hardware capabilities
-(GM atomics, register-addressable SIMD, kernel-side printf) and two new AscendC
-programming levels (covered in §3.1.2). Findings below are derived from inspection
-of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
+950 is not an incremental refresh of 910b. It introduces new hardware
+capabilities (register-addressable SIMD, kernel-side printf) and two new
+AscendC programming levels (covered in §3.1.2). Findings below are derived
+from inspection of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.1 Hardware Capability Deltas
 
@@ -82,8 +82,6 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 - **Register file is first-class.** The vector register file is now exposed
   as a planned address space for tile computation.
-- **Global-memory atomics (new hardware).** 950 adds hardware atomics —
-  CAS, Add, Max, Min, Or, And, Xor — operating on both global memory and UB.
 - **Low-precision matmul first-class.** Bit-mode matmul is now exposed as
   a dedicated hardware path, consistent with the new MX-family data formats
   (below).
@@ -109,7 +107,7 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
   basic_api keeps explicit `set_flag` / `wait_flag` and TPipe events;
   MicroAPI adds `MaskReg` predication at the register-tile granularity
   (masks are not barriers — barriers remain basic_api's responsibility);
-  SIMT-API adds warp-level primitives and GM atomics for fine-grained sync.
+  SIMT-API adds warp-level primitives for fine-grained sync.
   A DSL must decide which model to expose (or hide) and stay coherent across
   levels.
 - **Ping-pong.** The on-chip TPUSH/TPOP ring buffer on A5 removes the GM
@@ -122,7 +120,7 @@ of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
   TPUSH/TPOP ring buffer (on A5, a fixed exclusion zone inside UB or L1).
   The DSL allocator must model both.
 - **Portability.** Targeting only basic_api is the conservative choice but
-  forfeits 950's register-file throughput and GM atomics. Targeting MicroAPI
+  forfeits 950's register-file throughput. Targeting MicroAPI
   reaches the register file but requires c310 (950-only builds). A DSL that
   claims to target 910b + 950 must lower to basic_api only, or implement
   per-target lowering.
