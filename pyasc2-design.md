@@ -1,4 +1,4 @@
-# PyAsc2 API Design
+# pyasc2 API Design
 
 ## Contents
 
@@ -32,7 +32,7 @@
 
 (sorted by priority)
 - Express kernels in terms of **tensors** (ND-arrays in global memory) and **tiles** (fixed-shape chunks in on-chip memory). Buffer addresses, TPipe/TQue lifecycles, and synchronization barriers are not exposed to the user.
-- Performance pyAsc2 code is 90% of optimized AscendC operators
+- pyasc2 code achieves ≥90% of the performance of hand-optimized AscendC operators
 - Provide NumPy-like syntax for arithmetic, reductions, shape manipulation, masking, and atomics.
 - **[Main engineering challenge]** Automate synchronization insertion, UB memory allocation, and ping-pong optimization through compiler passes and compiler hints.
 - Target hardware: Ascend 910B/C, 950.
@@ -60,7 +60,10 @@ without user annotation.
 
 ### 2.3 UB Memory Allocation and Reuse
 
-On-chip UB (Unified Buffer) is ~256 KB per Da Vinci core (910B).
+On-chip UB (Unified Buffer) is a scratchpad per Da Vinci core. Physical
+capacity varies by chip and SoC (910B has ~256 KB; framework-usable budgets
+reported elsewhere in this document — e.g. 192 KB on Triton-Ascend — reflect
+reservations by the runtime/framework, not a single canonical number).
 After loop unrolling, many tile SSA values can be live simultaneously.
 Compiler must compute liveness and reuse freed UB regions.
 Tile shapes are statically known at JIT time; total live footprint must be
@@ -71,14 +74,14 @@ validated at compile time.
 **910C** is two 910B dies in one package — same Da Vinci architecture, same AIC/AIV
 model, same challenges as A2/A3. This section therefore focuses on 950 (A5).
 
-950 is not an incremental refresh of 910b. It introduces new hardware
+950 is not an incremental refresh of 910B. It introduces new hardware
 capabilities (register-addressable SIMD, kernel-side printf) and two new
 AscendC programming levels (covered in §3.1.2). Findings below are derived
 from inspection of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 
 #### 2.4.1 Hardware Capability Deltas
 
-950 adds the following hardware capabilities relative to 910b: <sup>[[58]](#ref-58)</sup>
+950 adds the following hardware capabilities relative to 910B: <sup>[[58]](#ref-58)</sup>
 
 - **Register file is first-class.** The vector register file is now exposed
   as a planned address space for tile computation.
@@ -122,7 +125,7 @@ from inspection of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 - **Portability.** Targeting only basic_api is the conservative choice but
   forfeits 950's register-file throughput. Targeting MicroAPI
   reaches the register file but requires c310 (950-only builds). A DSL that
-  claims to target 910b + 950 must lower to basic_api only, or implement
+  claims to target 910B + 950 must lower to basic_api only, or implement
   per-target lowering.
 
 ## 3. Programming Model Analysis
@@ -130,16 +133,16 @@ from inspection of the CANN 9 SDK preview. <sup>[[58]](#ref-58)</sup>
 ### 3.1 AscendC
 
 AscendC is the official C++ kernel language for Ascend NPU and the compilation
-target for PyAsc2. Understanding how it handles the three key challenges defines
-the baseline that PyAsc2 must improve upon.
+target for pyasc2. Understanding how it handles the three key challenges defines
+the baseline that pyasc2 must improve upon.
 
 AscendC is not a single programming model — it has evolved with the hardware.
 On 910B/C the only level is `basic_api` (TPipe/TQue, memory-centric). On 950
 two additional levels appeared — MicroAPI (register-tensor SIMD with
 predication) and SIMT-API (CUDA-like per-thread scalar) — neither of which
-compiles for 910b. We therefore split this section along the 910B/C vs 950
+compiles for 910B. We therefore split this section along the 910B/C vs 950
 axis: §3.1.1 covers `basic_api` behavior that applies to both targets (content
-written against 910b c220, unchanged on c310); §3.1.2 covers what is new and
+written against 910B c220, unchanged on c310); §3.1.2 covers what is new and
 950-exclusive.
 
 #### 3.1.1 AscendC on 910B/C
@@ -151,7 +154,8 @@ key challenges are analyzed below in this level.
 
 AscendC exposes synchronization directly to the user via `TPipe` and `TQue`.
 Every data transfer requires explicit `EnQue`/`DeQue` calls; every pipeline
-stage boundary requires explicit `SetEventId`/`WaitEventId`:
+stage boundary requires explicit `SetEventId`/`WaitEventId`. Schematic (stages
+are logically distinct; variable names are illustrative):
 
 ```cpp
 TPipe pipe;
@@ -161,25 +165,27 @@ pipe.InitBuffer(inQueue, 2, TILE_SIZE);    // TPipe allocates UB memory for TQue
 pipe.InitBuffer(outQueue, 1, TILE_SIZE);
 
 // MTE2 stage: load
-LocalTensor<half> tile = inQueue.AllocTensor<half>();
-DataCopy(tile, gm_src[offset], TILE_SIZE);
-inQueue.EnQue(tile);              // signal: load done
+LocalTensor<half> tile_in = inQueue.AllocTensor<half>();
+DataCopy(tile_in, gm_src[offset], TILE_SIZE);
+inQueue.EnQue(tile_in);           // signal: load done
 
 // Vector stage: compute
-LocalTensor<half> tile = inQueue.DeQue<half>();   // wait: load done
-Add(out, tile, tile2, TILE_SIZE);
+LocalTensor<half> tile_c = inQueue.DeQue<half>();   // wait: load done
+LocalTensor<half> out = outQueue.AllocTensor<half>();
+Add(out, tile_c, tile_c, TILE_SIZE);   // e.g. 2x (stand-in compute)
 outQueue.EnQue(out);
+inQueue.FreeTensor(tile_c);
 
 // MTE3 stage: store
-LocalTensor<half> out = outQueue.DeQue<half>();
-DataCopy(gm_dst[offset], out, TILE_SIZE);
-outQueue.FreeTensor(out);
+LocalTensor<half> tile_out = outQueue.DeQue<half>();
+DataCopy(gm_dst[offset], tile_out, TILE_SIZE);
+outQueue.FreeTensor(tile_out);
 
 // Cross-unit sync (e.g. between independent pipelines)
 pipe.SetEventId(EVENT_ID0);       // producer signals
 pipe.WaitEventId(EVENT_ID0);      // consumer waits
 ```
-Source: Ascend C Operator Development Guide, CANN 8.0 https://www.hiascend.com/document/detail/en/canncommercial/800/opdevg/Ascendcopdevg/atlas_ascendc_10_0001.html
+Source: Ascend C Operator Development Guide, CANN 8.0. <sup>[[59]](#ref-59)</sup>
 
 Missing or misplaced EnQue/DeQue / SetEventId/WaitEventId causes silent data hazards. AscendC does not insert any barriers automatically.
 
@@ -203,7 +209,9 @@ for (int i = 0; i < num_tiles; i++) {
 
     // Vector: compute tile i
     LocalTensor<half> cur = inQueue.DeQue<half>();
-    Add(out, cur, cur2, TILE_SIZE);
+    LocalTensor<half> out = outQueue.AllocTensor<half>();
+    Add(out, cur, cur, TILE_SIZE);   // e.g. 2x (stand-in compute)
+    outQueue.EnQue(out);
     inQueue.FreeTensor(cur);
 }
 ```
@@ -241,11 +249,11 @@ On 950, `basic_api` still exists — the same `TPipe` / `TQue` / `LocalTensor`
 programming style analyzed in §3.1.1 is available via build-mode `c310`, and
 the three-challenge analysis above carries over unchanged. What is new on 950
 are (a) c310 deltas inside `basic_api`, and (b) two brand-new API levels
-(MicroAPI, SIMT-API) that are unavailable on 910b. <sup>[[58]](#ref-58)</sup>
+(MicroAPI, SIMT-API) that are unavailable on 910B. <sup>[[58]](#ref-58)</sup>
 
 The three levels stack as follows:
 
-| Level | 910b (c220) | 950 (c310) | Style |
+| Level | 910B (c220) | 950 (c310) | Style |
 |---|---|---|---|
 | **basic_api** | ✓ 35 impl files | ✓ 39 impl files | Hardware intrinsics, memory-centric (`__ubuf__` ptrs + explicit `repeatTime` / `BlkStride` / `RepStride`) |
 | **MicroAPI** | ✗ absent | ✓ 20 interface files + `dav_c310/` backend | Register-tensor SIMD functional. `RegTensor<T>` values, `MaskReg` predication, `LoadAlign`/`StoreAlign`, arch-dispatched via `__NPU_ARCH__` |
@@ -254,7 +262,7 @@ The three levels stack as follows:
 Canonical example — same op (`Relu`) in each style:
 
 ```cpp
-// 910b basic_api (dav_c220)
+// 910B basic_api (dav_c220)
 template <typename T>
 void ReluIntrinsicsImpl(__ubuf__ T* dst, __ubuf__ T* src,
                         uint8_t repeatTime, const UnaryRepeatParams& p) {
@@ -275,15 +283,14 @@ template <typename T>
 T AbsImpl(T x) { return (x < 0) ? -x : x; }           // scalar on thread
 ```
 
-A kernel written against MicroAPI or SIMT-API **will not compile** for 910b —
+A kernel written against MicroAPI or SIMT-API **will not compile** for 910B —
 both levels are 950-exclusive and both require the c310 build-mode. Choosing
 a level is therefore a portability decision a DSL must make explicit.
 
-##### basic_api on c310 — what changed
-
-The programming model and the three-challenge baseline (manual sync, manual
-ping-pong, manual UB layout) are unchanged at the basic_api level on 950 —
-the primitive set widened but the programming style did not.
+At the `basic_api` level, the c310 primitive set widened relative to c220 but
+the programming style did not: the three-challenge baseline (manual sync,
+manual ping-pong, manual UB layout) from §3.1.1 carries over unchanged. The
+two 950-exclusive levels — MicroAPI and SIMT-API — are described next.
 
 ##### MicroAPI — register-tensor SIMD with predication (950-exclusive)
 
@@ -408,16 +415,15 @@ SIMT-style lane grouping and latency hiding.
 **pyasc2 does not target SIMT-API.** SIMT-style per-thread code on Ascend is
 not expected to reach the performance ceiling needed by a pyasc2 kernel; the
 DSL's goal is ≥90% of peak hardware potential and SIMT lowers that ceiling by
-giving up tile-level orchestration. SIMT-API is noted here for completeness
-and because its atomics are mirrored into basic_api.
+giving up tile-level orchestration. SIMT-API is noted here for completeness.
 
 ##### pyasc2 implication
 
-pyasc2 targets `basic_api` (baseline, portable across 910b and 950) and
+pyasc2 targets `basic_api` (baseline, portable across 910B and 950) and
 MicroAPI (950-only, for register-file throughput and the new dtype matrix).
 SIMT-API is out of scope. A pyasc2 program targeting 950 must lower to a
 c310 build that mixes basic_api for data movement and TPipe orchestration with
-MicroAPI for compute inside tiles; targeting 910b lowers to basic_api only
+MicroAPI for compute inside tiles; targeting 910B lowers to basic_api only
 (c220). This level split is the core portability decision §4 must make
 explicit.
 
@@ -502,21 +508,26 @@ generates the corresponding `nvvm.mbarrier.*` intrinsics for memory-vs-compute
 synchronization. <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
 
 
-> TODO: Exmplanation above is about MMA. Better here to insert GEMM example (not vecadd)
 ```python
+# GEMM via cuTile — no user barriers; TMA async loads and mbarriers
+# for the MMA pipeline are inserted by the compiler.
 @ct.kernel
-def vector_add(a, b, c, tile_size: ct.Constant[int]):
-    pid = ct.bid(0)
-    a_tile = ct.load(a, index=(pid,), shape=(tile_size,))
-    b_tile = ct.load(b, index=(pid,), shape=(tile_size,))
-    result = a_tile + b_tile
-    ct.store(c, index=(pid,), tile=result)
+def matmul(a, b, c,
+           block_m: ct.Constant[int], block_n: ct.Constant[int],
+           block_k: ct.Constant[int]):
+    pid_m, pid_n = ct.bid(0), ct.bid(1)
+    acc = ct.zeros((block_m, block_n), dtype=ct.float32)
+    for k in range(0, K, block_k):
+        a_tile = ct.load(a, index=(pid_m, k),     shape=(block_m, block_k))
+        b_tile = ct.load(b, index=(k,     pid_n), shape=(block_k, block_n))
+        acc += ct.dot(a_tile, b_tile)
+    ct.store(c, index=(pid_m, pid_n), tile=acc)
 ```
 
 An 86-line Python cuTile kernel expands to ~1,900 lines of PTX with 20 barrier objects —
-none written by the developer. <sup>[[15]](#ref-15)</sup>
+none written by the developer. <sup>[[15]](#ref-15)</sup> GEMM on Blackwell reaches
+~90% of cuBLAS with zero user-written pipelining (detail in §3.3 Ping-Pong). <sup>[[17]](#ref-17)</sup>
 
-> TODO: if possible to get references - insert perf numbers B200 GEMM (matmul kernels)
 **Conclusion**: Sync is fully automated and not even expressible by the user.
 cuTile is the most restrictive model — no escape hatch for manual barriers.
 
@@ -526,8 +537,9 @@ The user writes a simple loop. The TileIR compiler transforms it into a pipeline
 through three passes: <sup>[[15]](#ref-15) [[16]](#ref-16)</sup>
 
 
-1. `convert-tileaa-to-tileas` — converts tiled loads into async loads with pipeline ops
-> TODO: clarify if this "tiled loads are about MMA or vector ops
+1. `convert-tileaa-to-tileas` — converts tiled loads (both MMA operand loads and
+   plain vector loads — the pass treats them uniformly as async DMA) into
+   pipeline ops
 2. `tileas-materialize-async` — creates the async pipeline structure with multi-buffering
 3. `convert-pipeline-to-nvvm` — lowers to NVVM barrier intrinsics (`nvvm.mbarrier.*`)
 
@@ -556,10 +568,12 @@ dedicated to tensor cores, separate from shared memory. Operand A lives in TMEM 
 operand B in SMEM, accumulator in TMEM exclusively. Allocation is dynamic via
 `tcgen05.alloc` (32-column minimum, power-of-2 granularity). <sup>[[20]](#ref-20)</sup>
 
-cuTile handles TMEM automatically including contention handling — retry with 100ns backoff
-when allocation fails. On Hopper, matrix operands competed for register file space;
-on Blackwell, TMEM decouples tensor cores from CUDA cores entirely. <sup>[[19]](#ref-19)</sup>
-> TODO: about not clear. what is 100us? what is matrix operands "competed"?
+cuTile handles TMEM automatically, including contention: on `tcgen05.alloc`
+failure the compiler emits a retry loop with a 100 ns backoff. On Hopper,
+matrix A/B operands shared the vector register file with CUDA-core computation
+(both fought for the same VRF budget, limiting tile sizes); Blackwell's TMEM
+is a separate addressable region dedicated to tensor cores, so tensor and
+CUDA cores no longer contend for the same storage. <sup>[[19]](#ref-19)</sup>
 
 **Conclusion**: All on-chip memory allocation — shared memory for SIMT, TMEM for tensor
 cores — is fully compiler-managed. No user-visible allocation API exists.
@@ -635,8 +649,8 @@ L1 and L0A/B/C allocation has no compile-time limit checking in either mode.
 
 **Conclusion**: Memory hierarchy placement is always user-chosen (unlike Triton).
 Buffer reuse and validation are available but opt-in — not yet the default.
-> TODO: Clarify why Buffer reuse and validation is not yet default option. 
-
+TileLang-Ascend's project roadmap lists memory planning and autotuner work as
+in-progress, so the default may change in a future release. <sup>[[25]](#ref-25)</sup>
 
 ### 3.5 Triton-Ascend
 
@@ -964,7 +978,8 @@ DMA↔compute overlap, no Cube↔Vector hazards.
 #### Ping-Pong
 
 TPU on-chip memory: **VMEM** (Vector Memory) — 32 MB SRAM per core,
-equivalent to Ascend's UB but ~170× larger (32 MB vs 192 KB). <sup>[[49]](#ref-49)</sup>
+equivalent to Ascend's UB but roughly two orders of magnitude larger
+(Ascend UB is on the order of 100s of KB depending on SoC). <sup>[[49]](#ref-49)</sup>
 
 Default: 2-level double buffering for all inputs and outputs, generated
 automatically by Mosaic from BlockSpec. Sufficient for most kernels because
@@ -995,8 +1010,8 @@ No user-visible VMEM address management — unlike Ascend's manual UB offset pla
 If total VMEM usage exceeds 32 MB (including double-buffer overhead), compilation fails.
 
 **Conclusion**: VMEM allocation is fully compiler-managed. User only controls tile
-shapes via BlockSpec. The 32 MB budget is ~170× Ascend's UB — memory pressure is
-rarely an issue on TPU.
+shapes via BlockSpec. The 32 MB budget dwarfs Ascend's UB by two orders of
+magnitude — memory pressure is rarely an issue on TPU.
 
 ### 3.8 Mojo (Modular)
 
@@ -1112,14 +1127,14 @@ philosophy: structured control over automation.
 | **Abstraction level** | Instruction | Tile/block | Tile | Tile (hybrid) | Tile/block | Tensor | Tensor + Tile (expert) | Tile (BlockSpec) | Thread + Tile (structured) |
 | **Sync insertion** | Manual | Auto | Auto (no escape) | Hybrid (auto opt-in) | Auto (HIVM) | Auto | Auto (4-phase) | Auto (Mosaic from BlockSpec) | Manual (three pillars) |
 | **Ping-pong** | Manual | Auto (`num_stages`) | Auto (no hint) | `T.Pipelined(num_stages)` | Auto (multiBuffer) | Auto | Auto | Auto (2-stage default) | Manual (`TilePipeline`) |
-| **On-chip memory** | UB 192 KB | Shared ~228 KB | Shared + TMEM 256 KB | UB 192 KB | UB 192 KB | UB 192 KB | UB 192 KB | VMEM 32 MB | Shared (GPU) |
+| **On-chip memory** | UB (SoC-dependent) | Shared ~228 KB | Shared + TMEM 256 KB | UB (SoC-dependent) | UB (SoC-dependent) | UB (SoC-dependent) | UB (SoC-dependent) | VMEM 32 MB | Shared (GPU) |
 | **Memory mgmt** | Manual | Auto (AllocationAnalysis) | Auto | Hybrid (opt-in planning) | Auto (PlanMemory/HIVM) | Auto | Auto (3-pass) | Auto (BlockSpec) | Manual (TileTensor) |
 | **Overflow detection** | Silent corruption | Compile-time error | Compile-time error | Partial (opt-in) | Compile-time error | ? | ? | Compile-time error | Compile-time (layout) |
 | **IR type** | C++ (AscendC) | MLIR (TTIR/TTGIR) | MLIR (TileIR) | TVM TIR | MLIR (TTIR→HIVM) | Custom C++ graphs | Custom C++ AST | Jaxpr → Mosaic (MLIR) | MLIR (KGEN) |
 | **User memory control** | Full manual | None | None | Explicit hierarchy | Indirect (BLOCK_SIZE) | None | `target_memory` hint | BlockSpec (tile shape) | Full manual (Shared, TMEM) |
 | **Hardware** | Ascend 910B/C | NVIDIA/AMD/Intel | NVIDIA Blackwell | Ascend A2/A3 | Ascend A2/A3 | Ascend 910B | 910B, 950 | Google TPU | NVIDIA/AMD/Apple |
 
-#### Key Observations for PyAsc2 Design
+#### Key Observations for pyasc2 Design
 
 **1. Full automation is achievable on Ascend — performance cost varies.**
 Among Ascend-targeting frameworks, Triton-Ascend, TileLang-Ascend, PyPTO-main, and
@@ -1127,12 +1142,12 @@ PyPTOv3 all automate sync, ping-pong, and UB allocation. But automation quality 
 TileLang-Ascend's auto sync generates conservative `PipeBarrier<PIPE_ALL>` instead of
 fine-grained flags. No published benchmarks compare automated vs hand-optimized AscendC
 for the same kernels. The gap between "correct" and "optimal" automatic code is the main
-engineering challenge for PyAsc2.
+engineering challenge for pyasc2.
 
 **2. The right abstraction level is tensor — with tile escape hatch.**
 PyPTOv3's two-level design covers both use cases. Triton's tile-only model forces all
 users into low-level thinking. cuTile's no-escape model limits advanced optimization.
-PyAsc2 should follow PyPTOv3's approach: tensor-level default, tile-level available.
+pyasc2 should follow PyPTOv3's approach: tensor-level default, tile-level available.
 
 **3. Memory hierarchy hints > full manual control.**
 cuTile (fully implicit) and AscendC (fully explicit) are the two extremes. PyPTOv3's
@@ -1141,23 +1156,24 @@ handles mechanics.
 
 **4. Liveness-based UB reuse is critical — more so than on GPU.**
 On GPU, shared memory reuse pressure is low — up to 228 KB available, rarely exhausted.
-On Ascend, UB is 192 KB (96 KB with double buffering) and almost always the bottleneck.
-Suboptimal reuse forces smaller tiles or spills to global memory. PyAsc2 should provide
+On Ascend, UB is orders of magnitude smaller than GPU shared memory (and halves
+once double buffering is enabled), so it is almost always the bottleneck.
+Suboptimal reuse forces smaller tiles or spills to global memory. pyasc2 should provide
 automatic reuse by default with an option for expert override of buffer placement.
 
 **5. Compile-time UB overflow detection is non-negotiable.**
 AscendC's silent corruption is the #1 developer pain point. Every modern framework
-catches overflow at compile time. PyAsc2 must validate UB/L1/L0 fit at compile time
+catches overflow at compile time. pyasc2 must validate UB/L1/L0 fit at compile time
 with clear error messages.
 
 **6. `num_stages` vs fully automatic pipelining.**
 Triton and TileLang-Ascend expose pipeline depth to users. cuTile, PyPTO-main, and
-PyPTOv3 hide it entirely. For PyAsc2: default to automatic, provide `num_stages` as
+PyPTOv3 hide it entirely. For pyasc2: default to automatic, provide `num_stages` as
 optional expert hint.
 
 **7. Ascend-native IR outperforms adapted GPU IR.**
 Triton-Ascend's TTIR→HIVM path works but requires user-level rewrites (BLOCK_SIZE_SUB,
-fixed grid, alignment). Native Ascend frameworks handle these in the compiler. PyAsc2
+fixed grid, alignment). Native Ascend frameworks handle these in the compiler. pyasc2
 should be Ascend-native from the start.
 
 ## 4. Key Design Decisions
@@ -1168,7 +1184,7 @@ should be Ascend-native from the start.
 
 | # | Description | URL |
 |---|-------------|-----|
-| 1 | PyAsc2 HLD (internal) | https://gitcode.com/compiler-team/pyasc/pull/99 |
+| 1 | pyasc2 HLD (internal) | https://gitcode.com/compiler-team/pyasc/pull/99 |
 | 2 | PyPTO — tile-based framework for Ascend (official) | https://github.com/hw-native-sys/pypto |
 | 3 | PyPTO official repo (GitCode/CANN) | https://gitcode.com/cann/pypto/ |
 | 4 | PTO ISA — TPUSH/TPOP protocol | https://github.com/hw-native-sys/pypto/blob/main/docs/en/reference/pto-isa/01-tpush_tpop.md |
@@ -1226,3 +1242,4 @@ should be Ascend-native from the start.
 | 56 | Structured Mojo Kernels Part 1 — design philosophy, performance | https://www.modular.com/blog/structured-mojo-kernels-part-1-peak-performance-half-the-code |
 | 57 | TileTensor — parametric tile-level tensors in Mojo | https://www.modular.com/blog/tiletensor-part-1-safer-more-efficient-gpu-kernels |
 | 58 | CANN 9 SDK preview — 950/A5 programming model findings (internal notes from SDK source inspection) | — |
+| 59 | Ascend C Operator Development Guide, CANN 8.0 | https://www.hiascend.com/document/detail/en/canncommercial/800/opdevg/Ascendcopdevg/atlas_ascendc_10_0001.html |
