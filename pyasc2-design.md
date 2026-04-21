@@ -32,7 +32,7 @@
 
 (sorted by priority)
 - Express kernels in terms of **tensors** (ND-arrays in global memory) and **tiles** (fixed-shape chunks in on-chip memory). Buffer addresses, TPipe/TQue lifecycles, and synchronization barriers are not exposed to the user.
-- pyasc2 code achieves ≥90% of the performance of hand-optimized AscendC operators
+- pyasc2 code achieves ≥90% of the performance of hand-optimized native AscendC operators from CANN
 - Provide NumPy-like syntax for arithmetic, reductions, shape manipulation, masking, and atomics.
 - **[Main engineering challenge]** Automate synchronization insertion, UB memory allocation, and ping-pong optimization through compiler passes and compiler hints.
 - Target hardware: Ascend 910B/C, 950.
@@ -60,10 +60,8 @@ without user annotation.
 
 ### 2.3 UB Memory Allocation and Reuse
 
-On-chip UB (Unified Buffer) is a scratchpad per Da Vinci core. Physical
-capacity varies by chip and SoC (910B has ~256 KB; framework-usable budgets
-reported elsewhere in this document — e.g. 192 KB on Triton-Ascend — reflect
-reservations by the runtime/framework, not a single canonical number).
+On-chip UB (Unified Buffer) is a scratchpad per Da Vinci core. Capacity
+varies by chip and SoC version — from 192 KB to 256 KB and higher.
 After loop unrolling, many tile SSA values can be live simultaneously.
 Compiler must compute liveness and reuse freed UB regions.
 Tile shapes are statically known at JIT time; total live footprint must be
