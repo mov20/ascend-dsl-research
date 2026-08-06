@@ -26,6 +26,7 @@
   - [3.3 Risks of inaction](#33-risks-of-inaction)
   - [3.4 Milestones](#34-milestones)
 - [4. References](#4-references)
+- [Appendix A. Open questions](#appendix-a-open-questions)
 
 ---
 
@@ -54,30 +55,38 @@ Kernel programming has historically forced a choice between two bad corners — 
 
 #### Performance: there is no single "% of peak" number
 
-The convenient claim that a portable DSL delivers "~80% of peak out of the box" does not survive contact with current hardware. Measured against hand-tuned vendor kernels, Triton spans roughly **20% to 100%**, and the spread is driven by *kernel and architecture*, not by a headline figure.
+The frequently-quoted claim that a portable DSL delivers "~80% of peak out of the box" is not supported by measurements on current hardware. Against hand-tuned vendor kernels, Triton spans roughly **20% to 100%**, and the spread is driven by *kernel and architecture*, not by a single headline figure.
 
 **GEMM is the good case.** On Hopper, Triton lands within ~10% of cuBLAS — a figure reported by Triton's own creator, whose GTC 2025 slide for dense FP16 8192² matmul on H100 and GB200 reads simply *"still slower!"* <sup>[[7]](#ref-7)</sup> On Blackwell that falls to roughly 62–70%.
 
-**Attention is the bad case, and it is getting worse as hardware advances.** On H100, Triton reaches ~61% of FlashAttention-3. On B200, measured on *current* Triton 3.6 / CUDA 13.1 — so not an artifact of stale tooling — it reaches **37–44% of FlashAttention-4**: <sup>[[12]](#ref-12)</sup>
+**Attention is the bad case, and it is getting worse as hardware advances.** On H100, Triton reaches ~61% of FlashAttention-3. On B200, measured on *current* Triton 3.6 / CUDA 13.1 — so not an artifact of stale tooling: <sup>[[12]](#ref-12)</sup>
 
-| B200, fwd, hd128 non-causal, seqlen 32K | TFLOP/s | % of B200 dense peak (2250) |
-|---|---|---|
-| Triton 3.6 | 703 | ~31% |
-| **Gluon 3.6** | **1250** | **~55%** |
-| cuDNN 9.19 | 1613 | ~72% |
-| FlashAttention-4 | 1613 | ~72% |
+| B200, fwd, hd128 non-causal, seqlen 32K | TFLOP/s | vs hardware peak¹ | vs best kernel² |
+|---|---|---|---|
+| Triton 3.6 | 703 | 31% | 44% |
+| **Gluon 3.6** | **1250** | **56%** | **77%** |
+| cuDNN 9.19 | 1613 | 72% | 100% |
+| FlashAttention-4 | 1613 | 72% | 100% |
 
-Triton's absolute attention throughput rose only ~1.78× from H100 to B200 while the hardware and hand-tuned kernels roughly 2.5×'d. **A portable abstraction does not automatically inherit a new architecture's capability.**
+¹ Against B200 dense BF16 peak = 2250 TFLOP/s — the theoretical hardware ceiling.
+² Against FlashAttention-4, the fastest kernel measured (cuDNN ties it).
+
+Both denominators are shown because they answer different questions: *vs hardware peak* is how much of the chip is left unused; *vs best kernel* is the gap to what a skilled human has actually achieved on that chip. Across sequence lengths 1K–32K, Triton spans **37–44% of FA4** and **23–31% of hardware peak**.
+
+Triton's absolute attention throughput rose only ~1.78× from H100 to B200 while the hardware and hand-tuned kernels roughly 2.5×'d. A portable abstraction does not automatically inherit a new architecture's capability.
 
 **Tuning closes the gap, but the starting point is low.** An independent IBM Research study of paged attention in Triton on H100 measured a naive kernel at **19.7% of FlashAttention-3**, reaching **98.6–105.9%** only after 5.9× of systematic tuning. <sup>[[13]](#ref-13)</sup> The DSL does not deliver peak; a skilled human using the DSL eventually does.
 
 **What closes the gap is hardware control, not abstraction.** The same Flash Attention kernel moves from **45% → 69%** of H100 compute throughput once warp specialization is applied — a 24-point swing driven purely by how much hardware detail the programmer can reach. <sup>[[8]](#ref-8)</sup>
 
-**The decisive precedent.** Faced with this ceiling, OpenAI's response was *not* a better compiler — it was **Gluon**, a second, lower-level, deliberately non-portable language inside the Triton repository that exposes layouts, shared memory, and warp specialization directly. On the same B200 attention where Triton reaches 37–44%, Gluon reaches ~55% of peak — a **1.8× gain bought entirely by surrendering portability.** The organization with the most to lose from fragmenting its own DSL concluded that reaching peak requires hardware-specific control. That is the strongest available evidence for the premise this document starts from.
+**The precedent.** Faced with this ceiling, OpenAI's response was not a better compiler but **Gluon** — a second, lower-level, deliberately non-portable language inside the Triton repository that exposes layouts, shared memory, and warp specialization directly. On the B200 attention above, Gluon reaches 1250 TFLOP/s against Triton's 703: a **1.8× gain obtained by surrendering portability.** The organization with the most to lose from fragmenting its own DSL nonetheless concluded that reaching peak requires hardware-specific control. §3 returns to this.
 
 #### Usability: LOC is the floor, not the ceiling of the question
 
-Lines of code is a crude but honest proxy for authoring effort, and Flash Attention — non-trivial, universally implemented, performance-critical — is the standard yardstick:
+Lines of code is a crude but honest proxy for authoring effort. Flash Attention and GEMM are the conventional yardsticks:
+
+> **TODO — this comparison is too narrow to generalize.** Two kernels cannot support a general claim, and these are the two every DSL optimizes hardest. A representative table needs the ordinary kernels that dominate real workloads — `layer_norm`, `softmax`, quantize/dequantize, MoE routing — and ideally pairs each with a measured performance number, so usability and performance can be read on the same axes. Kernel selection should follow the SOTA-model analysis. See [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
+
 
 | DSL | Flash Attention fwd | GEMM |
 |-----|--------------------|------|
@@ -103,9 +112,15 @@ A DSL is a long-lived investment; model architectures are not. The question is w
 - **Heterogeneous memory layouts.** Compressed and sparse attention variants that place differently-shaped KV state in one paged pool.
 - **Awkward shapes.** Novel residual topologies producing, in one real case, a GEMM with output dimension 24 — DSLs tuned for 128×128 tiles handle these badly.
 
-**Why the prize is larger on Ascend.** The native tier is more punishing here than on GPU: Ascend C requires hand-placed synchronization barriers, hand-planned Unified Buffer layout within a hard 192–256 KB budget, and hand-structured ping-pong loops — with missing barriers causing silent data hazards and UB overflow corrupting memory at runtime. A wider gap between the native and DSL tiers means more value in closing it. That is precisely PyAsc2's target: tile-level Python at **≈90% of hand-optimized Ascend C**, with synchronization, UB allocation, and pipelining automated by the compiler. <sup>[[11]](#ref-11)</sup>
+**The gap is wider on Ascend.** The native tier costs more here than on GPU: Ascend C requires hand-placed synchronization barriers, hand-planned Unified Buffer layout within a hard 192–256 KB budget, and hand-structured ping-pong loops — with missing barriers causing silent data hazards and UB overflow corrupting memory at runtime. The wider the gap between the native and DSL tiers, the more a DSL that closes it is worth. PyAsc2 targets tile-level Python at **≈90% of hand-optimized Ascend C**, with synchronization, UB allocation, and pipelining automated by the compiler. <sup>[[11]](#ref-11)</sup>
 
 > Per-DSL mechanics (how each handles sync insertion, ping-pong, and UB allocation) are analyzed in [`../pyasc2-design.md`](../pyasc2-design.md) §3 and are not repeated here. This document tracks where the industry is *moving*.
+
+### What frontier SOTA models actually use
+
+> **Placeholder — section number TBD at the consistency pass.** Planned to sit here, ahead of the vendor/theme sections, since what the frontier labs actually ship is the strongest evidence in the document.
+
+_TODO (next stage)._ What programming model the 2026 open-weights frontier models use for their performance-critical kernels — DeepSeek V4, GLM 5.2, Kimi K3, Qwen, MiniMax. Covers: the documented Triton→TileLang migration; the two-tier split (hand-written CUDA/PTX for GEMM, flagship attention, and network kernels; Python DSL for the long tail); a per-lab table; each lab's stated reason for its choice; a counter-example where DSL nondeterminism cost model quality; and the architectural demands that define the scalability axis in §2.0. Supplies the kernel list for [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
 
 ### 2.1 Python as the universal kernel front-end
 
@@ -183,3 +198,36 @@ _TODO (Stage 4)._
 | <a name="ref-12"></a>[12] | FlashAttention-4 (MLSys 2026), arXiv 2603.05451 — B200 fwd hd128 non-causal TFLOP/s vs Triton 3.6 and Gluon 3.6, measured on CUDA 13.1 / PyTorch 2.10 | https://arxiv.org/abs/2603.05451 |
 | <a name="ref-13"></a>[13] | "The Anatomy of a Triton Attention Kernel," IBM Research Zurich, 2025-10-07, arXiv 2511.11581 — independent; H100 80GB paged attention: naive 19.7% of FA3 → 98.6–105.9% after systematic tuning | https://arxiv.org/abs/2511.11581 |
 | <a name="ref-14"></a>[14] | DeepSeek-V4 technical report, arXiv 2606.19348 — §3.1 fused MoE dispatch+GEMM+activation+combine megakernel: 1.50–1.73× over non-fused (up to 1.96× for RL rollout); self-reported | https://arxiv.org/abs/2606.19348 |
+
+---
+
+## Appendix A. Open questions
+
+Items deliberately left unresolved, to be closed before this document is final.
+
+### A.1 Broaden the performance-vs-usability comparison
+
+The LOC table in §2.0 covers only Flash Attention and GEMM — the two kernels every DSL optimizes hardest, and therefore the least representative. A general claim about usability needs the ordinary kernels that dominate real workloads:
+
+| Kernel | Why it belongs |
+|---|---|
+| `layer_norm` / `rms_norm` | Ubiquitous; reduction + elementwise; tests whether cross-lane reductions are expressed cleanly |
+| `softmax` | Numerically delicate (max-subtraction, online algorithms); a fair test of expressiveness |
+| quantize / dequantize | Performance-critical at FP8/FP4; block-scaled formats stress the type system |
+| MoE routing / gather-scatter | Irregular access patterns — the long tail a DSL is supposed to absorb |
+
+Two open decisions: **(a)** whether to pair each kernel with a measured performance number so usability and performance sit on the same axes — more useful, but requires a benchmark run rather than source inspection; **(b)** which implementation counts as the reference, given that a single operator now ships with several backends across different DSLs. Kernel selection should follow the SOTA-model analysis, so the set reflects what frontier models actually run.
+
+### A.2 Dynamic shapes
+
+**Unresolved — no position taken yet.** Static tile shapes are what make aggressive compile-time scheduling possible; PyAsc2 requires tile shapes known at JIT time, though tensor shapes may be runtime values. Real serving workloads are dynamic: variable sequence length, variable batch, ragged and paged attention, per-token MoE expert loads.
+
+The open question is where the boundary belongs:
+
+| Option | Cost |
+|---|---|
+| Recompile per shape bucket | Simple; risks JIT thrash and cache pressure at serving time |
+| Pad to fixed tiles | Wastes compute at low occupancy |
+| Symbolic tile dimensions in the IR | Most general; most expensive to build, and may forfeit the scheduling advantages static shapes provide |
+
+What competing DSLs do, and what the 2026 model architectures actually require, should be established in the SOTA-model and cross-cutting-trends sections before this is decided.
