@@ -38,21 +38,46 @@ _TODO (Stage 5): 6–8 cited highlight bullets + "why this matters for Ascend" +
 
 ## 2. Industry Trends Review
 
-### 2.0 Framing: the performance–usability gap
+### 2.0 Framing: what a kernel DSL must deliver
 
-Every accelerator publishes a peak FLOPs number. The real question is **what it costs a human to reach it.** That cost — lines of code, required hardware expertise, algorithmic effort — is the second axis of every programming-model decision, and it is the axis that decides whether a chip gets a software ecosystem.
+**The strategic premise.** This document assumes Ascend becomes a mainstream AI accelerator — a platform frontier models are expected to run on, not a niche port target. That premise fixes the design goal: **a Python DSL that reaches peak *on Ascend*, rather than one that runs everywhere at a discount.** Portability — the property Triton and TileLang optimize for — is deliberately traded away. The rest of this section establishes the three axes that remain, and §2.9/§3 return to what the industry's own evidence says about that trade.
 
-**The three tiers.** Kernel programming has historically forced a choice between two bad corners:
+Three axes decide whether a kernel DSL is worth building:
 
-| Tier | How you program | Achievable % of peak | Cost to author |
-|------|-----------------|----------------------|----------------|
-| **Framework / graph** | PyTorch ops, graph compiler | Whatever the vendor's op library provides — no recourse for a fused or novel op | ~0 (no kernel written) |
-| **Kernel DSL** | Python, tile-level | ~80–95% typical; 90%+ when tuned | Tens of lines |
-| **Native intrinsics** | Ascend C, CUDA C++ | ~100% (defines the ceiling) | Hundreds–thousands of lines + scarce expertise |
+| Axis | Question it answers | Measured by |
+|------|--------------------|-------------|
+| **Performance** | Does it beat third-party portable DSLs on our own hardware? | % of a hand-optimized native kernel |
+| **Usability** | What does it cost a human to get there? | LOC, debuggability, tooling, error quality |
+| **Scalability** | Can it absorb what comes next? | New model architectures, megakernels, in-kernel communication |
 
-The top tier is easy but leaves performance unreachable the moment a model needs an operator the vendor did not ship. The bottom tier reaches peak but prices out everyone except a small population of kernel engineers. **Kernel DSLs exist to break this tradeoff** — to buy most of the bottom tier's performance at close to the top tier's authoring cost.
+Kernel programming has historically forced a choice between two bad corners — a framework/graph level that is effortless but capped at whatever operators the vendor shipped, and native intrinsics (Ascend C, CUDA C++) that define the performance ceiling but cost hundreds to thousands of lines and scarce expertise. **A kernel DSL exists to break that tradeoff.** Whether any given DSL actually does is an empirical question, and the answers below are less flattering than the marketing.
 
-**Measuring usability: lines of code.** LOC is a crude but honest proxy for authoring effort, and Flash Attention — non-trivial, universally implemented, performance-critical — is the standard yardstick. Forward-kernel size across current DSLs:
+#### Performance: there is no single "% of peak" number
+
+The convenient claim that a portable DSL delivers "~80% of peak out of the box" does not survive contact with current hardware. Measured against hand-tuned vendor kernels, Triton spans roughly **20% to 100%**, and the spread is driven by *kernel and architecture*, not by a headline figure.
+
+**GEMM is the good case.** On Hopper, Triton lands within ~10% of cuBLAS — a figure reported by Triton's own creator, whose GTC 2025 slide for dense FP16 8192² matmul on H100 and GB200 reads simply *"still slower!"* <sup>[[7]](#ref-7)</sup> On Blackwell that falls to roughly 62–70%.
+
+**Attention is the bad case, and it is getting worse as hardware advances.** On H100, Triton reaches ~61% of FlashAttention-3. On B200, measured on *current* Triton 3.6 / CUDA 13.1 — so not an artifact of stale tooling — it reaches **37–44% of FlashAttention-4**: <sup>[[12]](#ref-12)</sup>
+
+| B200, fwd, hd128 non-causal, seqlen 32K | TFLOP/s | % of B200 dense peak (2250) |
+|---|---|---|
+| Triton 3.6 | 703 | ~31% |
+| **Gluon 3.6** | **1250** | **~55%** |
+| cuDNN 9.19 | 1613 | ~72% |
+| FlashAttention-4 | 1613 | ~72% |
+
+Triton's absolute attention throughput rose only ~1.78× from H100 to B200 while the hardware and hand-tuned kernels roughly 2.5×'d. **A portable abstraction does not automatically inherit a new architecture's capability.**
+
+**Tuning closes the gap, but the starting point is low.** An independent IBM Research study of paged attention in Triton on H100 measured a naive kernel at **19.7% of FlashAttention-3**, reaching **98.6–105.9%** only after 5.9× of systematic tuning. <sup>[[13]](#ref-13)</sup> The DSL does not deliver peak; a skilled human using the DSL eventually does.
+
+**What closes the gap is hardware control, not abstraction.** The same Flash Attention kernel moves from **45% → 69%** of H100 compute throughput once warp specialization is applied — a 24-point swing driven purely by how much hardware detail the programmer can reach. <sup>[[8]](#ref-8)</sup>
+
+**The decisive precedent.** Faced with this ceiling, OpenAI's response was *not* a better compiler — it was **Gluon**, a second, lower-level, deliberately non-portable language inside the Triton repository that exposes layouts, shared memory, and warp specialization directly. On the same B200 attention where Triton reaches 37–44%, Gluon reaches ~55% of peak — a **1.8× gain bought entirely by surrendering portability.** The organization with the most to lose from fragmenting its own DSL concluded that reaching peak requires hardware-specific control. That is the strongest available evidence for the premise this document starts from.
+
+#### Usability: LOC is the floor, not the ceiling of the question
+
+Lines of code is a crude but honest proxy for authoring effort, and Flash Attention — non-trivial, universally implemented, performance-critical — is the standard yardstick:
 
 | DSL | Flash Attention fwd | GEMM |
 |-----|--------------------|------|
@@ -63,28 +88,22 @@ The top tier is easy but leaves performance unreachable the moment a model needs
 | Gluon (warp-specialized) | ~645 LOC <sup>[[5]](#ref-5)</sup> | ~40 |
 | Pallas (TPU, production) | ~1718 LOC <sup>[[6]](#ref-6)</sup> | ~40 |
 
-Two observations matter. First, the spread is **more than 20×** between the most and least ergonomic tile DSL — usability is not a rounding error, it is the dominant differentiator. Second, **the same DSL costs ~2.8× more code on Ascend than on GPU** (TileLang: ~208 vs ~74 LOC), because the Ascend port must express memory movement explicitly. <sup>[[4]](#ref-4)</sup> The usability gap is measurably wider on NPU than on GPU.
+Two observations. The spread is **more than 20×** between tile DSLs — usability is the dominant differentiator, not a rounding error. And **the same DSL costs ~2.8× more code on Ascend than on GPU** (TileLang: ~208 vs ~74 LOC), because the Ascend port must express memory movement explicitly. <sup>[[4]](#ref-4)</sup> The authoring gap is measurably wider on NPU.
 
-**Measuring performance: what DSLs actually reach.** The performance side of the tradeoff is equally concrete:
+But LOC alone understates the problem. Real authoring cost also includes **debuggability** (can you inspect intermediate tile state, or only the final output?), **error quality** (does an oversized buffer fail at compile time with a clear message, or corrupt memory silently at runtime?), **tooling** (profilers that attribute time to source lines; autotuning that does not require hand-written search spaces), and **determinism** — which, as §2.1 shows, has become a hard production requirement rather than a nicety.
 
-- Triton delivers **~80% of peak out of the box**; 90%+ requires heavily tuned kernels. <sup>[[7]](#ref-7)</sup>
-- The same Flash Attention kernel moves from **45% → 69%** of H100 compute throughput once warp specialization is applied — a 24-point swing driven purely by how much hardware detail the programmer controls. <sup>[[8]](#ref-8)</sup>
-- Higher-level does not automatically mean slower: Helion reports **1.85× over hand-written Triton** on H100 GEMM, because an autotuning compiler searches a space a human will not. <sup>[[9]](#ref-9)</sup>
-- TileLang reaches FlashMLA-level performance on H100 in **~80 LOC**. <sup>[[10]](#ref-10)</sup>
+**Higher-level is not automatically slower.** Helion reports **1.85× over hand-written Triton** on H100 GEMM, because an autotuning compiler searches a space a human will not. <sup>[[9]](#ref-9)</sup> TileLang reaches FlashMLA-level performance on H100 in ~80 LOC. <sup>[[10]](#ref-10)</sup> When the compiler is strong, abstraction wins on both axes at once — fewer lines *and* more speed. That is why the industry keeps moving up-stack rather than down, and why a weak compiler, not a high abstraction level, is what costs performance.
 
-The lesson is that the tradeoff is **not** monotonic. Raising the abstraction level costs performance only when the compiler is weak; when it is strong, abstraction *wins* on both axes at once — fewer lines **and** more speed. This is why the industry keeps moving up-stack rather than down.
+#### Scalability: the axis that decides the next two years
 
-**Portability is a distinct second axis.** It is tempting to collapse "portable" and "usable" into one property. They are independent:
+A DSL is a long-lived investment; model architectures are not. The question is whether the programming model can absorb demands that did not exist when it was designed. The 2026 frontier generation has produced four that most tile DSLs cannot express (evidenced in detail in §2.1):
 
-| | Usability | Portability |
-|---|---|---|
-| **Question** | How much effort to reach peak *on this chip*? | Does the same source run on *other* chips? |
-| **Optimizes for** | Developer productivity, ecosystem growth | Ecosystem reuse, migration cost |
-| **Tension** | — | A portable abstraction must model the *intersection* of targets, so it cannot express hardware-unique features |
+- **Fused compute + communication.** Large sparse MoE now fuses dispatch, GEMM, activation, and combine into a single pipelined megakernel, overlapping one wave of experts' compute with the next wave's network transfer — worth **1.50–1.73×** over non-fused baselines. <sup>[[14]](#ref-14)</sup> No mainstream tile DSL lets a kernel *contain* a network operation.
+- **Low precision as a first-class type.** FP4 weights with FP8 activations and block-wise scale factors, plus quantization fused into epilogues.
+- **Heterogeneous memory layouts.** Compressed and sparse attention variants that place differently-shaped KV state in one paged pool.
+- **Awkward shapes.** Novel residual topologies producing, in one real case, a GEMM with output dimension 24 — DSLs tuned for 128×128 tiles handle these badly.
 
-A DSL can be highly usable and non-portable (a native tile DSL tuned to one architecture), or portable and awkward (a GPU-shaped abstraction retargeted onto an NPU — see the ~2.8× LOC penalty above). **This distinction is the crux of §3's positioning question** for Ascend: whether to compete on the portability axis (Triton / TileLang compatibility) or the usability-at-peak axis (a native DSL), and what each choice forfeits.
-
-**Why the gap is wider on Ascend.** The native tier is more punishing on Ascend than on GPU. Ascend C requires the programmer to hand-place every synchronization barrier, hand-plan the Unified Buffer layout within a hard 192–256 KB budget, and hand-structure loops for ping-pong double buffering — with missing barriers causing silent data hazards and UB overflow causing silent memory corruption at runtime. On GPU, Triton's compiler automates the equivalent concerns and validates limits at compile time. A wider gap means a **larger prize** for a DSL that closes it: this is precisely the target PyAsc2 sets for itself — tile-level Python at **≈90% of hand-optimized Ascend C**, with synchronization, UB allocation, and pipelining automated by the compiler. <sup>[[11]](#ref-11)</sup>
+**Why the prize is larger on Ascend.** The native tier is more punishing here than on GPU: Ascend C requires hand-placed synchronization barriers, hand-planned Unified Buffer layout within a hard 192–256 KB budget, and hand-structured ping-pong loops — with missing barriers causing silent data hazards and UB overflow corrupting memory at runtime. A wider gap between the native and DSL tiers means more value in closing it. That is precisely PyAsc2's target: tile-level Python at **≈90% of hand-optimized Ascend C**, with synchronization, UB allocation, and pipelining automated by the compiler. <sup>[[11]](#ref-11)</sup>
 
 > Per-DSL mechanics (how each handles sync insertion, ping-pong, and UB allocation) are analyzed in [`../pyasc2-design.md`](../pyasc2-design.md) §3 and are not repeated here. This document tracks where the industry is *moving*.
 
@@ -156,8 +175,11 @@ _TODO (Stage 4)._
 | <a name="ref-4"></a>[4] | TileLang-**Ascend** Flash Attention fwd — ~208 LOC (lines 8–215); explicit memory management vs ~74 LOC GPU variant | https://github.com/tile-ai/tilelang-ascend/blob/ascendc_pto/examples/flash_attention/flash_attn_bhsd.py |
 | <a name="ref-5"></a>[5] | Gluon warp-specialized attention tutorial — 645 LOC | https://github.com/triton-lang/triton/blob/main/python/tutorials/gluon/08-warp-specialization.py |
 | <a name="ref-6"></a>[6] | JAX Pallas TPU Flash Attention — 1718 LOC (production-grade, highly parameterized) | https://github.com/jax-ml/jax/blob/main/jax/experimental/pallas/ops/tpu/flash_attention.py |
-| <a name="ref-7"></a>[7] | Triton community meetup notes, 2025-07-09 — Jeff Niu (OpenAI): out-of-the-box only ~80% peak | https://github.com/triton-lang/triton/blob/main/docs/meetups/07-09-2025/notes.md |
+| <a name="ref-7"></a>[7] | Phil Tillet (Triton creator), GTC 2025 session S72876 — dense FP16 8192² matmul ~10% behind cuBLAS 12.8 on H100 and GB200; slide text "still slower!" | https://www.nvidia.com/en-us/on-demand/session/gtc25-s72876/ |
 | <a name="ref-8"></a>[8] | Triton community meetup notes, 2025-03-12 — Meta warp-specialization case study: Flash Attention 45% → 69% compute throughput on H100 | https://github.com/triton-lang/triton/blob/main/docs/meetups/03-12-2025/notes.md |
 | <a name="ref-9"></a>[9] | Helion announcement (Meta / PyTorch), 2025-10-22 — 1.85× vs hand-written Triton on H100 GEMM (vendor-reported) | https://pytorch.org/blog/helion |
 | <a name="ref-10"></a>[10] | TileLang DeepSeek MLA example — ~80 LOC matching FlashMLA-level performance on H100 (project-reported) | https://github.com/tile-ai/tilelang/blob/main/examples/deepseek_mla/README.md |
 | <a name="ref-11"></a>[11] | PyAsc2 design overview — goal: ≈90% of hand-optimized Ascend C; automate sync insertion, UB allocation, ping-pong | https://gitcode.com/compiler-team/pyasc/blob/v2/docs/design/design-overview.md |
+| <a name="ref-12"></a>[12] | FlashAttention-4 (MLSys 2026), arXiv 2603.05451 — B200 fwd hd128 non-causal TFLOP/s vs Triton 3.6 and Gluon 3.6, measured on CUDA 13.1 / PyTorch 2.10 | https://arxiv.org/abs/2603.05451 |
+| <a name="ref-13"></a>[13] | "The Anatomy of a Triton Attention Kernel," IBM Research Zurich, 2025-10-07, arXiv 2511.11581 — independent; H100 80GB paged attention: naive 19.7% of FA3 → 98.6–105.9% after systematic tuning | https://arxiv.org/abs/2511.11581 |
+| <a name="ref-14"></a>[14] | DeepSeek-V4 technical report, arXiv 2606.19348 — §3.1 fused MoE dispatch+GEMM+activation+combine megakernel: 1.50–1.73× over non-fused (up to 1.96× for RL rollout); self-reported | https://arxiv.org/abs/2606.19348 |
