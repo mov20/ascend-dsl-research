@@ -13,6 +13,9 @@
 > **Why it belongs in this survey:** CATLASS DSL is a *first-party Huawei* Python DSL for Ascend,
 > built on MLIR. That places it alongside Triton-Ascend and TileLang-Ascend in the Ascend Python-DSL
 > landscape — a project not previously covered by our tracking tables.
+>
+> **See also:** [`catlass-dsl-automation.md`](catlass-dsl-automation.md) — a focused audit of whether
+> double buffering, UB management, and synchronization insertion are compiler-automated or manual.
 
 **Analyzed at commit `c511c43`** ("docs: add DSL Syntax Constraints"), 2026-08-07, branch `dsl`. <sup>[[1]](#ref-1)</sup>
 
