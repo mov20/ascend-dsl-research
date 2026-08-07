@@ -10,16 +10,17 @@
 
 - [1. Highlights](#1-highlights)
 - [2. Industry Trends Review](#2-industry-trends-review)
-  - [2.0 Framing: the performance–usability gap](#20-framing-the-performanceusability-gap)
-  - [2.1 Python as the universal kernel front-end](#21-python-as-the-universal-kernel-front-end)
-  - [2.2 NVIDIA moves up-stack to Python DSLs](#22-nvidia-moves-up-stack-to-python-dsls)
-  - [2.3 Triton as the de-facto cross-vendor standard](#23-triton-as-the-de-facto-cross-vendor-standard)
-  - [2.4 Front-ends going higher-level and autotuned](#24-front-ends-going-higher-level-and-autotuned)
-  - [2.5 Every non-NVIDIA datacenter vendor ships a Python DSL](#25-every-non-nvidia-datacenter-vendor-ships-a-python-dsl)
-  - [2.6 Customer and production adoption](#26-customer-and-production-adoption)
-  - [2.7 LLM / agentic kernel generation](#27-llm--agentic-kernel-generation)
-  - [2.8 Standardization and interop pressure](#28-standardization-and-interop-pressure)
-  - [2.9 Synthesis: where this lands in 1–2 years](#29-synthesis-where-this-lands-in-1-2-years)
+  - [2.0 Framing: what a kernel DSL must deliver](#20-framing-what-a-kernel-dsl-must-deliver)
+  - [2.1 What frontier SOTA models actually use](#21-what-frontier-sota-models-actually-use)
+  - [2.2 Python as the universal kernel front-end](#22-python-as-the-universal-kernel-front-end)
+  - [2.3 NVIDIA moves up-stack to Python DSLs](#23-nvidia-moves-up-stack-to-python-dsls)
+  - [2.4 Triton as the de-facto cross-vendor standard](#24-triton-as-the-de-facto-cross-vendor-standard)
+  - [2.5 Front-ends going higher-level and autotuned](#25-front-ends-going-higher-level-and-autotuned)
+  - [2.6 Every non-NVIDIA datacenter vendor ships a Python DSL](#26-every-non-nvidia-datacenter-vendor-ships-a-python-dsl)
+  - [2.7 Customer and production adoption](#27-customer-and-production-adoption)
+  - [2.8 LLM / agentic kernel generation](#28-llm--agentic-kernel-generation)
+  - [2.9 Standardization and interop pressure](#29-standardization-and-interop-pressure)
+  - [2.10 Synthesis: where this lands in 1–2 years](#210-synthesis-where-this-lands-in-12-years)
 - [3. Strategic Plan for Ascend (1–2 years)](#3-strategic-plan-for-ascend-12-years)
   - [3.1 Positioning & messaging — PyAsc2 vs Triton / TileLang](#31-positioning--messaging--pyasc2-vs-triton--tilelang)
   - [3.2 Strategic pillars](#32-strategic-pillars)
@@ -41,7 +42,7 @@ _TODO (Stage 5): 6–8 cited highlight bullets + "why this matters for Ascend" +
 
 ### 2.0 Framing: what a kernel DSL must deliver
 
-**The strategic premise.** This document assumes Ascend becomes a mainstream AI accelerator — a platform frontier models are expected to run on, not a niche port target. That premise fixes the design goal: **a Python DSL that reaches peak *on Ascend*, rather than one that runs everywhere at a discount.** Portability — the property Triton and TileLang optimize for — is deliberately traded away. The rest of this section establishes the three axes that remain, and §2.9/§3 return to what the industry's own evidence says about that trade.
+**The strategic premise.** This document assumes Ascend becomes a mainstream AI accelerator — a platform frontier models are expected to run on, not a niche port target. That premise fixes the design goal: **a Python DSL that reaches peak *on Ascend*, rather than one that runs everywhere at a discount.** Portability — the property Triton and TileLang optimize for — is deliberately traded away. The rest of this section establishes the three axes that remain, and §2.10/§3 return to what the industry's own evidence says about that trade.
 
 Three axes decide whether a kernel DSL is worth building:
 
@@ -116,45 +117,43 @@ A DSL is a long-lived investment; model architectures are not. The question is w
 
 > Per-DSL mechanics (how each handles sync insertion, ping-pong, and UB allocation) are analyzed in [`../pyasc2-design.md`](../pyasc2-design.md) §3 and are not repeated here. This document tracks where the industry is *moving*.
 
-### What frontier SOTA models actually use
-
-> **Placeholder — section number TBD at the consistency pass.** Planned to sit here, ahead of the vendor/theme sections, since what the frontier labs actually ship is the strongest evidence in the document.
+### 2.1 What frontier SOTA models actually use
 
 _TODO (next stage)._ What programming model the 2026 open-weights frontier models use for their performance-critical kernels — DeepSeek V4, GLM 5.2, Kimi K3, Qwen, MiniMax. Covers: the documented Triton→TileLang migration; the two-tier split (hand-written CUDA/PTX for GEMM, flagship attention, and network kernels; Python DSL for the long tail); a per-lab table; each lab's stated reason for its choice; a counter-example where DSL nondeterminism cost model quality; and the architectural demands that define the scalability axis in §2.0. Supplies the kernel list for [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
 
-### 2.1 Python as the universal kernel front-end
+### 2.2 Python as the universal kernel front-end
 
 _TODO (Stage 1)._
 
-### 2.2 NVIDIA moves up-stack to Python DSLs
+### 2.3 NVIDIA moves up-stack to Python DSLs
 
 _TODO (Stage 1)._
 
-### 2.3 Triton as the de-facto cross-vendor standard
+### 2.4 Triton as the de-facto cross-vendor standard
 
 _TODO (Stage 1)._
 
-### 2.4 Front-ends going higher-level and autotuned
+### 2.5 Front-ends going higher-level and autotuned
 
 _TODO (Stage 2)._
 
-### 2.5 Every non-NVIDIA datacenter vendor ships a Python DSL
+### 2.6 Every non-NVIDIA datacenter vendor ships a Python DSL
 
 _TODO (Stage 2)._
 
-### 2.6 Customer and production adoption
+### 2.7 Customer and production adoption
 
 _TODO (Stage 3)._
 
-### 2.7 LLM / agentic kernel generation
+### 2.8 LLM / agentic kernel generation
 
 _TODO (Stage 3)._
 
-### 2.8 Standardization and interop pressure
+### 2.9 Standardization and interop pressure
 
 _TODO (Stage 3)._
 
-### 2.9 Synthesis: where this lands in 1–2 years
+### 2.10 Synthesis: where this lands in 1–2 years
 
 _TODO (Stage 3)._
 
