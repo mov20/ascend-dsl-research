@@ -122,7 +122,103 @@ A DSL is a long-lived investment; model architectures are not. The question is w
 
 ### 2.1 What frontier SOTA models actually use
 
-_TODO (next stage)._ What programming model the 2026 open-weights frontier models use for their performance-critical kernels — DeepSeek V4, GLM 5.2, Kimi K3, Qwen, MiniMax. Covers: the documented Triton→TileLang migration; the two-tier split (hand-written CUDA/PTX for GEMM, flagship attention, and network kernels; Python DSL for the long tail); a per-lab table; each lab's stated reason for its choice; a counter-example where DSL nondeterminism cost model quality; and the architectural demands that define the extensibility axis in §2.0. Supplies the kernel list for [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
+Vendor announcements describe what a programming model *can* do. The kernel repositories published alongside frontier open-weights models show what teams with the strongest possible incentive to be fast actually *chose*. That evidence is more informative than any roadmap, and over the last eighteen months it moved.
+
+#### DeepSeek migrated from Triton to TileLang, and documented why
+
+The clearest signal is a dependency change across three consecutive releases of the same reference inference stack:
+
+| Release | Date | Kernel dependency |
+|---|---|---|
+| DeepSeek-V3 | 2024-12 | `triton==3.0.0` <sup>[[15]](#ref-15)</sup> |
+| DeepSeek-V3.2-Exp | 2025-09 | **`tilelang==0.1.6`** <sup>[[16]](#ref-16)</sup> |
+| DeepSeek-V4-Pro | 2026-04 | **`tilelang==0.1.8`** <sup>[[17]](#ref-17)</sup> |
+
+This was not incidental. The V4 technical report devotes a named section — §3.2, *"Flexible and Efficient Kernel Development with TileLang"* — to the decision. Across 58 pages the report mentions TileLang 13 times and Triton, PTX, and CUTLASS zero times each. <sup>[[14]](#ref-14)</sup> Its stated reasoning:
+
+> "In practice, our elaborate model architecture would have resulted in hundreds of fine-grained Torch ATen operators. We adopt TileLang to develop **a set of fused kernels to replace the vast majority of them**, delivering optimal performance with minimal effort. It also allows us to quickly prototype operators like attention variants during validation. These kernels play critical roles in model architecture development, large-scale training, and **ultimately production deployment of inference services**."
+
+Two details raise this above ordinary tool adoption. First, DeepSeek did not merely use the compiler — they **co-developed it**, contributing host-side code generation that cut per-invocation launch overhead from tens or hundreds of microseconds to under one, a Z3 SMT solver for layout inference and memory-hazard detection, and IEEE intrinsics enabling bitwise reproducibility against hand-written CUDA baselines. <sup>[[14]](#ref-14)</sup> Second, they shipped the resulting library: `deepseek-ai/TileKernels` contains **122 Python files and zero `.cu` files**, covering MoE gating and routing, FP8/FP4 quantization, fused SwiGLU-quant, and batched transpose. <sup>[[18]](#ref-18)</sup>
+
+#### But the hot path stayed in hand-written C++
+
+The migration has a sharp boundary, and mistaking its extent would be the easy error. DeepSeek runs a deliberate two-tier stack:
+
+| Tier | Components | Language | Evidence |
+|---|---|---|---|
+| **Hand-written** | MLA + sparse attention (FlashMLA) | CUDA C++ / CUTLASS | 23 `.cu`, 20 `.cuh` <sup>[[19]](#ref-19)</sup> |
+| | FP8/FP4 GEMM, MegaMoE (DeepGEMM) | CUDA C++ (JIT) | 42 `.cuh`, 46 `.hpp`; Python is bindings only <sup>[[20]](#ref-20)</sup> |
+| | MoE all-to-all dispatch/combine (DeepEP) | CUDA C++ + inline PTX | **55 `asm volatile` sites in one header** <sup>[[21]](#ref-21)</sup> |
+| **Python DSL** | MoE routing, quantization, transpose, norms, novel ops (TileKernels) | TileLang | 122 `.py`, 0 `.cu` <sup>[[18]](#ref-18)</sup> |
+
+The split is visible even *within a single feature*: the small GEMM for the mHC residual topology lives in DeepGEMM as CUDA, while mHC's Sinkhorn normalization and mixing operations live in TileKernels as TileLang. <sup>[[18]](#ref-18)</sup> <sup>[[20]](#ref-20)</sup>
+
+The operative rule appears to be: **Tensor-Core-bound GEMM, the flagship attention kernel, and network kernels stay hand-written; the long tail of fused element-wise, routing, quantization, and prototype operators moves to the DSL.** That long tail is large and growing, because each new architectural idea generates exactly this kind of operator.
+
+#### Per-lab survey
+
+| Lab / model | Kernel repositories | DSL used | Serves |
+|---|---|---|---|
+| **DeepSeek V4** | TileKernels; FlashMLA; DeepGEMM; DeepEP | **TileLang** (long tail) + CUDA/PTX (hot path) | Sparse attention, MoE EP, FP8/FP4 GEMM, quantization |
+| **Zhipu GLM-5.2** | `THUDM/slime` <sup>[[22]](#ref-22)</sup> | **TileLang** (4 files, ~823 LOC fwd+bwd) + 1 CUDA file | Sparse MLA + lightning indexer (training) |
+| **Alibaba Qwen** | `QwenLM/FlashQLA` <sup>[[23]](#ref-23)</sup> | **TileLang** (41 `.py`, 0 `.cu`) | Gated DeltaNet chunked prefill, fwd + bwd |
+| **Moonshot Kimi K3** | FlashKDA; MoonEP; minitriton <sup>[[24]](#ref-24)</sup> | **CUTLASS/CuTe C++** + **CuTe DSL** (Python) | KDA linear attention; MoE dispatch/combine |
+| **MiniMax M3** | `MiniMax-AI/MSA` <sup>[[25]](#ref-25)</sup> | **CuTe DSL + CUDA**; no Triton, no TileLang | Block-sparse attention, FP8/FP4 paged KV |
+| **Tencent Hy3** | `Tencent/hpc-ops` <sup>[[26]](#ref-26)</sup> | **CUDA/CuTe only** — 0 Triton, 0 TileLang | FP8 MoE, inference ops |
+| **OpenAI gpt-oss** | in-repo `gpt_oss/triton/` <sup>[[27]](#ref-27)</sup> | **Triton** (OpenAI owns Triton — dogfooding, not selection) | MXFP4 MoE, attention with sinks |
+| **Meta Llama 4** | none published | — | — |
+
+Three patterns emerge:
+
+**The choice splits along a China/US line.** TileLang has been adopted by the Chinese frontier labs — DeepSeek, Zhipu, and Alibaba — while CuTe DSL has been adopted where Blackwell-class control in Python is the priority (Moonshot, MiniMax). This is the most significant DSL shift of the period and is not widely reported.
+
+**Triton has become the reference layer, not the performance layer.** Across this cohort its role is the baseline others benchmark against and retain as a portability fallback. The one lab shipping Triton kernels is the lab that owns Triton.
+
+**The model repository is no longer a kernel artifact.** Every flagship model repository here ships zero kernels; they arrive separately, weeks to months later, under a different name. Serving is delegated to vLLM or SGLang.
+
+#### Why each lab chose what it chose
+
+The stated reasons are technical and consistent, and they centre on **control over scheduling** rather than syntax or ergonomics:
+
+- **Qwen** is the most explicit: FlashQLA uses TileLang because they "take CP and backward requirements into account… and **manually implement warpgroup specialization** to overlap data movement, Tensor Core computation, and CUDA Core computation." <sup>[[23]](#ref-23)</sup> They chose the DSL that *exposes* warp specialization — which Triton does not.
+- **Moonshot** reports FlashKDA, a CUTLASS-based kernel, "substantially outperforms the Triton reference implementation," and retains Triton only as a fallback. <sup>[[24]](#ref-24)</sup>
+- **Meta**, at the Triton developer conference: "Most people start with Triton… Some customers will go directly to CUTLASS/CuTe DSL. **Scheduling is usually a question that drives this choice.**" <sup>[[28]](#ref-28)</sup>
+
+This is the same conclusion §2.0 reached from the performance data, arrived at independently by practitioners: the gap that matters is *access to the hardware's scheduling primitives*.
+
+#### Counter-evidence
+
+Two findings cut against a simple pro-DSL reading, and both should be carried forward.
+
+**A DSL kernel cost model quality at Zhipu.** The GLM-5 report states that nondeterministic top-k operators — "e.g. CUDA or **TileLang** implementations" — "caused drastic performance degradation during RL after only a few steps, accompanied by a sharp drop in entropy." They reverted to `torch.topk`. <sup>[[29]](#ref-29)</sup> This is a rare documented case of DSL-kernel nondeterminism directly harming a model, and it explains why determinism appears as a hard requirement below.
+
+**Fragmentation is now measurable inside a single file tree.** vLLM's DeepSeek-V4 mHC operator ships **five backends** — CUDA, AITER, TileLang, Triton, and torch — and Qwen's Gated DeltaNet has four independent implementations across three DSLs, with the model author's own TileLang kernel not being the one vLLM serves. <sup>[[23]](#ref-23)</sup> Convergence on tiles as a *model* has not produced convergence on a single implementation.
+
+#### What these architectures demand of a programming model
+
+These are the concrete demands behind the scalability axis in §2.0. Each is drawn from a shipped 2026 model, not speculation.
+
+| Demand | Evidence | What it requires of the DSL |
+|---|---|---|
+| **Fused compute + communication** | V4 fuses MoE dispatch, GEMM, activation, and combine into one pipelined megakernel, overlapping one expert wave's compute with the next wave's transfer: **1.50–1.73×** over non-fused, up to **1.96×** for RL rollout <sup>[[14]](#ref-14)</sup> | A kernel must be able to *contain* a network operation and schedule against it |
+| **Low precision as a type** | V4 routed-expert weights in FP4 with FP8 elsewhere and **ue8m0 scales at 128×128 blocks**; Kimi K3 uses MXFP4 weights / MXFP8 activations with QAT <sup>[[14]](#ref-14)</sup> <sup>[[24]](#ref-24)</sup> | Block scaling as a first-class type; mixed FP4×FP8 operands; quantization fused into epilogues |
+| **Heterogeneous KV layouts** | V4's compressed + sparse attention reaches 1M context at **27% of the FLOPs and 10% of the KV cache** of V3.2 <sup>[[14]](#ref-14)</sup> | Differently-shaped state coexisting in one paged pool; context parallelism surviving non-contiguous partitioning |
+| **Bitwise determinism** | V4 abandoned split-KV attention and split-k GEMM, replaced cuBLAS with DeepGEMM, and replaced `atomicAdd` in sparse-attention backward with per-SM buffers and a deterministic global sum — all to obtain batch-invariance <sup>[[14]](#ref-14)</sup> | Reproducibility controls, pinned reduction order, opt-in fast-math |
+| **Awkward shapes** | The mHC topology requires a GEMM with **output dimension 24** <sup>[[14]](#ref-14)</sup> | Tiny and irregular tiles handled as well as 128×128 |
+
+The first row is the important one. **No mainstream tile DSL can express a kernel that performs network communication**, which is precisely why DeepSeek's MegaMoE is raw CUDA and Moonshot's MoonEP is CuTe DSL. It is a capability gap, not a performance gap.
+
+#### The Ascend angle
+
+Three facts here bear directly on this document's argument.
+
+**Demand for Ascend already exists at the frontier — and was not met by published code.** The V4 report states plainly: *"We validated the fine-grained EP scheme on **both NVIDIA GPUs and HUAWEI Ascend NPUs platforms**."* <sup>[[14]](#ref-14)</sup> This is the report's only mention of Ascend. The corresponding open-sourced MegaMoE implementation is CUDA-only; the Ascend implementation was not released.
+
+**Ascend support for these models is real but trails.** vLLM-Ascend ships tutorials for DeepSeek-V4-Pro and V4-Flash, GLM-5.2, Kimi-K2.6, and MiniMax on Atlas A2/A3, and MindSpeed-LLM added GLM-5.2 pretraining scripts two days after the model's release. <sup>[[30]](#ref-30)</sup> <sup>[[31]](#ref-31)</sup> The caveats matter: GLM-5.2 runs at 200K context on Ascend rather than 1M, and Kimi K3 runs from a third-party W4A8 checkpoint rather than its native MXFP4. Alibaba explicitly declined to build Ascend kernels for FlashQLA, citing bandwidth. <sup>[[23]](#ref-23)</sup>
+
+**The Ascend Triton path is not portable Triton.** vLLM-Ascend's Triton kernels import `triton.language.extra.cann.extension` — Ascend-specific intrinsics, not portable Triton source. <sup>[[30]](#ref-30)</sup> Portability across the GPU/NPU boundary is being asserted more often than it is achieved.
+
+> **Claim to avoid.** Reporting that GLM-5/5.2 was *trained* on ~100k Ascend 910B with MindSpore is unsubstantiated: the GLM-5 report never states its training hardware, does not mention MindSpore, and benchmarks its architecture against an H800 roofline. That these models *run* on Ascend is confirmed; that they were *trained* on it is not. <sup>[[29]](#ref-29)</sup>
 
 ### 2.2 Python as the universal kernel front-end
 
@@ -199,7 +295,24 @@ _TODO (Stage 4)._
 | <a name="ref-11"></a>[11] | PyAsc2 design overview — goal: ≈90% of hand-optimized Ascend C; automate sync insertion, UB allocation, ping-pong | https://gitcode.com/compiler-team/pyasc/blob/v2/docs/design/design-overview.md |
 | <a name="ref-12"></a>[12] | FlashAttention-4 (MLSys 2026), arXiv 2603.05451 — B200 fwd hd128 non-causal TFLOP/s vs Triton 3.6 and Gluon 3.6, measured on CUDA 13.1 / PyTorch 2.10 | https://arxiv.org/abs/2603.05451 |
 | <a name="ref-13"></a>[13] | "The Anatomy of a Triton Attention Kernel," IBM Research Zurich, 2025-10-07, arXiv 2511.11581 — independent; H100 80GB paged attention: naive 19.7% of FA3 → 98.6–105.9% after systematic tuning | https://arxiv.org/abs/2511.11581 |
-| <a name="ref-14"></a>[14] | DeepSeek-V4 technical report, arXiv 2606.19348 — §3.1 fused MoE dispatch+GEMM+activation+combine megakernel: 1.50–1.73× over non-fused (up to 1.96× for RL rollout); self-reported | https://arxiv.org/abs/2606.19348 |
+| <a name="ref-14"></a>[14] | DeepSeek-V4 technical report, arXiv 2606.19348 — §3.1 fused MoE megakernel (1.50–1.73×, up to 1.96× RL rollout), §3.2 TileLang adoption and compiler contributions, §3.3 bitwise batch-invariance, FP4/ue8m0 quantization, Ascend EP validation. All performance figures self-reported | https://arxiv.org/abs/2606.19348 |
+| <a name="ref-15"></a>[15] | DeepSeek-V3 reference inference `requirements.txt` (2024-12) — `triton==3.0.0` | https://github.com/deepseek-ai/DeepSeek-V3/blob/main/inference/requirements.txt |
+| <a name="ref-16"></a>[16] | DeepSeek-V3.2-Exp `inference/kernel.py` (2025-09) — `import tilelang.language as T`; `tilelang==0.1.6` | https://github.com/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/inference/kernel.py |
+| <a name="ref-17"></a>[17] | DeepSeek-V4-Pro reference inference `requirements.txt` (2026-04) — `tilelang==0.1.8` | https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/requirements.txt |
+| <a name="ref-18"></a>[18] | `deepseek-ai/TileKernels` — TileLang kernel library, MIT, created 2026-04-22; 122 `.py` / 0 `.cu`; MoE routing, FP8/FP4 quantization, fused SwiGLU-quant, mHC Sinkhorn ops | https://github.com/deepseek-ai/TileKernels |
+| <a name="ref-19"></a>[19] | `deepseek-ai/FlashMLA` — MLA and sparse attention in CUDA C++/CUTLASS (23 `.cu`, 20 `.cuh`) | https://github.com/deepseek-ai/FlashMLA |
+| <a name="ref-20"></a>[20] | `deepseek-ai/DeepGEMM` — FP8/FP4/BF16 GEMM, MegaMoE, mHC prenorm GEMM in CUDA C++ (42 `.cuh`, 46 `.hpp`); Python files are bindings | https://github.com/deepseek-ai/DeepGEMM |
+| <a name="ref-21"></a>[21] | `deepseek-ai/DeepEP` — MoE all-to-all dispatch/combine; CUDA C++ with inline PTX (55 `asm volatile` sites in `csrc/kernels/legacy/utils.cuh`) | https://github.com/deepseek-ai/DeepEP |
+| <a name="ref-22"></a>[22] | `THUDM/slime` — GLM-5/5.2 sparse-MLA and lightning-indexer training kernels in TileLang (4 files, ~823 LOC fwd+bwd); note the repo is under THUDM, not zai-org | https://github.com/THUDM/slime/tree/main/slime_plugins/models/glm5/ops |
+| <a name="ref-23"></a>[23] | `QwenLM/FlashQLA` — Gated DeltaNet kernels in TileLang (41 `.py`, 0 `.cu`); README states manual warpgroup specialization; issue #14 (2026-06-30) declines Ascend support | https://github.com/QwenLM/FlashQLA |
+| <a name="ref-24"></a>[24] | Moonshot AI Kimi K3 — repo and `k3_tech_report.pdf` (2026-07-27; no arXiv ID). FlashKDA in CUTLASS/CuTe "substantially outperforms the Triton reference"; MoonEP in CuTe DSL; `minitriton` tile DSL on MLIR | https://github.com/MoonshotAI/Kimi-K3 |
+| <a name="ref-25"></a>[25] | `MiniMax-AI/MSA` (2026-06-11) — block-sparse attention, FP8/FP4 paged KV in CuTe DSL + CUDA; no Triton, no TileLang | https://github.com/MiniMax-AI/MSA |
+| <a name="ref-26"></a>[26] | `Tencent/hpc-ops` — FP8 MoE and inference ops in CUDA/CuTe/CUTLASS; 0 Triton, 0 TileLang; benchmarks against vLLM Triton as baseline | https://github.com/Tencent/hpc-ops |
+| <a name="ref-27"></a>[27] | OpenAI `gpt-oss` — in-repo Triton kernels for MXFP4 MoE and attention with sinks | https://github.com/openai/gpt-oss |
+| <a name="ref-28"></a>[28] | Triton Developer Conference, Meta session (2025-11-05) — "Scheduling is usually a question that drives this choice" (Triton vs CUTLASS/CuTe DSL) | https://github.com/triton-lang/triton/tree/main/docs/meetups |
+| <a name="ref-29"></a>[29] | GLM-5 technical report, arXiv 2602.15763 — §3.2: nondeterministic top-k in "CUDA or TileLang" implementations caused "drastic performance degradation during RL"; reverted to `torch.topk`. Report does not state training hardware and does not mention MindSpore | https://arxiv.org/abs/2602.15763 |
+| <a name="ref-30"></a>[30] | `vllm-project/vllm-ascend` — tutorials for DeepSeek-V4-Pro/Flash, GLM-5.2, Kimi-K2.6, MiniMax on Atlas A2/A3; pins `triton-ascend==3.2.1`; imports `triton.language.extra.cann.extension` (Ascend-specific intrinsics) | https://github.com/vllm-project/vllm-ascend |
+| <a name="ref-31"></a>[31] | `Ascend/MindSpeed-LLM` — GLM-5.2 pretraining scripts added 2026-06-18, two days after model release | https://gitee.com/ascend/MindSpeed-LLM |
 
 ---
 
@@ -218,7 +331,9 @@ The LOC table in §2.0 covers only Flash Attention and GEMM — the two kernels 
 | quantize / dequantize | Performance-critical at FP8/FP4; block-scaled formats stress the type system |
 | MoE routing / gather-scatter | Irregular access patterns — the long tail a DSL is supposed to absorb |
 
-Two open decisions: **(a)** whether to pair each kernel with a measured performance number so usability and performance sit on the same axes — more useful, but requires a benchmark run rather than source inspection; **(b)** which implementation counts as the reference, given that a single operator now ships with several backends across different DSLs. Kernel selection should follow the SOTA-model analysis, so the set reflects what frontier models actually run.
+Two open decisions: **(a)** whether to pair each kernel with a measured performance number so usability and performance sit on the same axes — more useful, but requires a benchmark run rather than source inspection; **(b)** which implementation counts as the reference, given that a single operator now ships with several backends across different DSLs — §2.1 found vLLM's mHC operator shipping five.
+
+§2.1 also suggests the set should extend beyond textbook kernels to the operators frontier models actually generate: **MoE gating/routing**, **block-scaled FP8/FP4 quantize-dequantize**, and **fused quantize-plus-activation** — the categories that make up DeepSeek's TileKernels library, and therefore the clearest evidence of what the long tail now consists of.
 
 ### A.2 Dynamic shapes
 
