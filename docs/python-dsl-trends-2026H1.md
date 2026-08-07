@@ -172,7 +172,7 @@ Three patterns emerge:
 
 **The choice splits along a China/US line.** TileLang has been adopted by the Chinese frontier labs — DeepSeek, Zhipu, and Alibaba — while CuTe DSL has been adopted where Blackwell-class control in Python is the priority (Moonshot, MiniMax). This is the most significant DSL shift of the period and is not widely reported.
 
-**Triton has become the reference layer, not the performance layer.** Across this cohort its role is the baseline others benchmark against and retain as a portability fallback. The one lab shipping Triton kernels is the lab that owns Triton.
+**Triton has become the reference layer, not the performance layer.** Across this cohort its role is the baseline others benchmark against and retain as a portability fallback. The only lab in the table shipping Triton kernels is **OpenAI**, which created Triton — so `gpt-oss` is dogfooding rather than a competitive selection. Every lab that evaluated Triton as an outside option chose something else for its performance-critical kernels.
 
 **The model repository is no longer a kernel artifact.** Every flagship model repository here ships zero kernels; they arrive separately, weeks to months later, under a different name. Serving is delegated to vLLM or SGLang.
 
