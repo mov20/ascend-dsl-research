@@ -176,6 +176,19 @@ Three patterns emerge:
 
 **The model repository is no longer a kernel artifact.** Every flagship model repository here ships zero kernels; they arrive separately, weeks to months later, under a different name. Serving is delegated to vLLM or SGLang.
 
+#### Linear attention: one architectural trend, two DSL answers
+
+The clearest natural experiment in the table is linear and hybrid attention, which the Chinese labs have pushed hardest. Two of them shipped production kernels for it within months of each other — and chose differently:
+
+| Model | Mechanism | Kernel | Written in |
+|---|---|---|---|
+| **Kimi K3** | KDA (Kimi Delta Attention) — 69 KDA layers to 24 Gated-MLA layers | `FlashKDA` | **CUTLASS / CuTe C++** <sup>[[24]](#ref-24)</sup> |
+| **Qwen** | Gated DeltaNet | `QwenLM/FlashQLA` | **TileLang** (41 `.py`, 0 `.cu`) <sup>[[23]](#ref-23)</sup> |
+
+Same architectural direction, opposite tooling. Moonshot's stated reason for CUTLASS is performance — FlashKDA "substantially outperforms the Triton reference implementation" — while Qwen's stated reason for TileLang is access to **warpgroup specialization**. <sup>[[23]](#ref-23)</sup> <sup>[[24]](#ref-24)</sup> Both are arguments about control over scheduling, resolved in opposite directions.
+
+This matters for Ascend because linear attention is where the *portable* layer has actually reached the platform: the community `fla-org/flash-linear-attention` project ships a `triton_ascend` backend family covering KDA, gated-delta-rule, and related kernels, with Ascend-specific machinery — a Unified Buffer manager and an AI-Core task-time block budget. <sup>[[32]](#ref-32)</sup> It is community work rather than a lab's own port, and its Ascend-specific extensions are further evidence that "portable Triton" does not survive contact with the NPU unmodified.
+
 #### Why each lab chose what it chose
 
 The stated reasons are technical and consistent, and they centre on **control over scheduling** rather than syntax or ergonomics:
@@ -196,7 +209,7 @@ Two findings cut against a simple pro-DSL reading, and both should be carried fo
 
 #### What these architectures demand of a programming model
 
-These are the concrete demands behind the scalability axis in §2.0. Each is drawn from a shipped 2026 model, not speculation.
+These are the concrete demands behind the extensibility axis in §2.0. Each is drawn from a shipped 2026 model, not speculation.
 
 | Demand | Evidence | What it requires of the DSL |
 |---|---|---|
@@ -313,6 +326,7 @@ _TODO (Stage 4)._
 | <a name="ref-29"></a>[29] | GLM-5 technical report, arXiv 2602.15763 — §3.2: nondeterministic top-k in "CUDA or TileLang" implementations caused "drastic performance degradation during RL"; reverted to `torch.topk`. Report does not state training hardware and does not mention MindSpore | https://arxiv.org/abs/2602.15763 |
 | <a name="ref-30"></a>[30] | `vllm-project/vllm-ascend` — tutorials for DeepSeek-V4-Pro/Flash, GLM-5.2, Kimi-K2.6, MiniMax on Atlas A2/A3; pins `triton-ascend==3.2.1`; imports `triton.language.extra.cann.extension` (Ascend-specific intrinsics) | https://github.com/vllm-project/vllm-ascend |
 | <a name="ref-31"></a>[31] | `Ascend/MindSpeed-LLM` — GLM-5.2 pretraining scripts added 2026-06-18, two days after model release | https://gitee.com/ascend/MindSpeed-LLM |
+| <a name="ref-32"></a>[32] | `fla-org/flash-linear-attention` — community linear-attention kernel library with a `triton_ascend` backend family (KDA, gated-delta-rule); Ascend-specific machinery incl. `ascend_ub_manager.py` and an AI-Core task-time block budget; CI on CANN 9.0.0 | https://github.com/fla-org/flash-linear-attention |
 
 ---
 
