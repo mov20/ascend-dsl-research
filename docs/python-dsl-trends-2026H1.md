@@ -50,7 +50,7 @@ Three axes decide whether a kernel DSL is worth building:
 |------|--------------------|-------------|
 | **Performance** | Does it beat third-party portable DSLs on our own hardware? | % of a hand-optimized native kernel |
 | **Usability** | What does it cost a human to get there? | LOC, debuggability, tooling, error quality |
-| **Scalability** | Can it absorb what comes next? | New model architectures, megakernels, in-kernel communication |
+| **Extensibility** | Can it absorb what comes next? | New model architectures, megakernels, in-kernel collective communication |
 
 Kernel programming has historically forced a choice between two bad corners — a framework/graph level that is effortless but capped at whatever operators the vendor shipped, and native intrinsics (Ascend C, CUDA C++) that define the performance ceiling but cost hundreds to thousands of lines and scarce expertise. **A kernel DSL exists to break that tradeoff.** Whether any given DSL actually does is an empirical question, and the answers below are less flattering than the marketing.
 
@@ -62,15 +62,18 @@ The frequently-quoted claim that a portable DSL delivers "~80% of peak out of th
 
 **Attention is the bad case, and it is getting worse as hardware advances.** On H100, Triton reaches ~61% of FlashAttention-3. On B200, measured on *current* Triton 3.6 / CUDA 13.1 — so not an artifact of stale tooling: <sup>[[12]](#ref-12)</sup>
 
-| B200, fwd, hd128 non-causal, seqlen 32K | TFLOP/s | vs hardware peak¹ | vs best kernel² |
-|---|---|---|---|
-| Triton 3.6 | 703 | 31% | 44% |
-| **Gluon 3.6** | **1250** | **56%** | **77%** |
-| cuDNN 9.19 | 1613 | 72% | 100% |
-| FlashAttention-4 | 1613 | 72% | 100% |
+All four rows below run the **same algorithm** — flash attention — on the same hardware, at the same shape. The only variable is **what each implementation is written in**. That is what makes the comparison meaningful: it isolates the cost of the authoring technology from the cost of the algorithm.
 
+| Implementation | Written in | TFLOP/s | vs hardware peak¹ | vs best kernel² |
+|---|---|---|---|---|
+| Triton 3.6 | portable tile DSL | 703 | 31% | 44% |
+| **Gluon 3.6** | **low-level tile DSL, non-portable** | **1250** | **56%** | **77%** |
+| cuDNN 9.19 | NVIDIA closed, hand-tuned library | 1613 | 72% | 100% |
+| FlashAttention-4 | hand-written CUTLASS / CuTe C++ | 1613 | 72% | 100% |
+
+*B200, forward, head-dim 128, non-causal, sequence length 32K.*
 ¹ Against B200 dense BF16 peak = 2250 TFLOP/s — the theoretical hardware ceiling.
-² Against FlashAttention-4, the fastest kernel measured (cuDNN ties it).
+² Against FlashAttention-4 — the fastest implementation measured, and the reference point for "what a skilled human achieves in C++." cuDNN ties it.
 
 Both denominators are shown because they answer different questions: *vs hardware peak* is how much of the chip is left unused; *vs best kernel* is the gap to what a skilled human has actually achieved on that chip. Across sequence lengths 1K–32K, Triton spans **37–44% of FA4** and **23–31% of hardware peak**.
 
@@ -104,11 +107,11 @@ But LOC alone understates the problem. Real authoring cost also includes **debug
 
 **Higher-level is not automatically slower.** Helion reports **1.85× over hand-written Triton** on H100 GEMM, because an autotuning compiler searches a space a human will not. <sup>[[9]](#ref-9)</sup> TileLang reaches FlashMLA-level performance on H100 in ~80 LOC. <sup>[[10]](#ref-10)</sup> When the compiler is strong, abstraction wins on both axes at once — fewer lines *and* more speed. That is why the industry keeps moving up-stack rather than down, and why a weak compiler, not a high abstraction level, is what costs performance.
 
-#### Scalability: the axis that decides the next two years
+#### Extensibility: the axis that decides the next two years
 
 A DSL is a long-lived investment; model architectures are not. The question is whether the programming model can absorb demands that did not exist when it was designed. The 2026 frontier generation has produced four that most tile DSLs cannot express (evidenced in detail in §2.1):
 
-- **Fused compute + communication.** Large sparse MoE now fuses dispatch, GEMM, activation, and combine into a single pipelined megakernel, overlapping one wave of experts' compute with the next wave's network transfer — worth **1.50–1.73×** over non-fused baselines. <sup>[[14]](#ref-14)</sup> No mainstream tile DSL lets a kernel *contain* a network operation.
+- **Fused compute + collective communication.** Throughout this document, *communication* means **inter-device collectives — all-reduce, all-gather, reduce-scatter, all-to-all — across NPUs and across nodes**, the operations NCCL and HCCL provide. It does **not** mean intra-SoC data movement between Cube and Vector cores, which is a separate concern handled by on-chip synchronization. Large sparse MoE now fuses dispatch, GEMM, activation, and combine into a single pipelined megakernel, overlapping one wave of experts' compute with the next wave's *network* transfer — worth **1.50–1.73×** over non-fused baselines. <sup>[[14]](#ref-14)</sup> No mainstream tile DSL lets a kernel *contain* a collective operation.
 - **Low precision as a first-class type.** FP4 weights with FP8 activations and block-wise scale factors, plus quantization fused into epilogues.
 - **Heterogeneous memory layouts.** Compressed and sparse attention variants that place differently-shaped KV state in one paged pool.
 - **Awkward shapes.** Novel residual topologies producing, in one real case, a GEMM with output dimension 24 — DSLs tuned for 128×128 tiles handle these badly.
@@ -119,7 +122,7 @@ A DSL is a long-lived investment; model architectures are not. The question is w
 
 ### 2.1 What frontier SOTA models actually use
 
-_TODO (next stage)._ What programming model the 2026 open-weights frontier models use for their performance-critical kernels — DeepSeek V4, GLM 5.2, Kimi K3, Qwen, MiniMax. Covers: the documented Triton→TileLang migration; the two-tier split (hand-written CUDA/PTX for GEMM, flagship attention, and network kernels; Python DSL for the long tail); a per-lab table; each lab's stated reason for its choice; a counter-example where DSL nondeterminism cost model quality; and the architectural demands that define the scalability axis in §2.0. Supplies the kernel list for [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
+_TODO (next stage)._ What programming model the 2026 open-weights frontier models use for their performance-critical kernels — DeepSeek V4, GLM 5.2, Kimi K3, Qwen, MiniMax. Covers: the documented Triton→TileLang migration; the two-tier split (hand-written CUDA/PTX for GEMM, flagship attention, and network kernels; Python DSL for the long tail); a per-lab table; each lab's stated reason for its choice; a counter-example where DSL nondeterminism cost model quality; and the architectural demands that define the extensibility axis in §2.0. Supplies the kernel list for [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison).
 
 ### 2.2 Python as the universal kernel front-end
 
