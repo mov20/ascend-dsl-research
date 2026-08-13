@@ -285,7 +285,49 @@ The consistent pattern is that **model labs do not write the Ascend kernels — 
 
 ### 2.2 Python as the universal kernel front-end
 
-_TODO (Stage 1)._
+Two properties are now shared by essentially every kernel language introduced since 2021: the source is **embedded in Python**, and the unit of work is a **tile** rather than a thread. This did not happen by coordination. It happened because two independent pressures — one from hardware, one from the developer population — pointed at the same design.
+
+#### The convergence, enumerated
+
+Every significant kernel DSL of the period, with the two properties marked:
+
+| DSL | Author | First public | Python-embedded | Tile-based | Primary target |
+|---|---|---|---|---|---|
+| Triton | OpenAI | 2021 | ✅ | ✅ | NVIDIA, AMD |
+| Pallas | Google / JAX | 2023 | ✅ | ✅ | TPU, GPU <sup>[[33]](#ref-33)</sup> |
+| NKI | AWS | 2024-09 | ✅ | ✅ | Trainium <sup>[[30]](#ref-30)</sup> |
+| TileLang | PKU + MSR | 2025-01 | ✅ | ✅ | GPU, Ascend, MetaX <sup>[[34]](#ref-34)</sup> |
+| CuTe DSL | NVIDIA | 2025-06 | ✅ | ✅ (layout algebra) | NVIDIA <sup>[[35]](#ref-35)</sup> |
+| Gluon | OpenAI | 2025-07 | ✅ | ✅ (explicit layouts) | NVIDIA, AMD |
+| Helion | Meta | 2025-10 | ✅ | ✅ | Triton, Pallas, CuTe, TileIR, Metal <sup>[[9]](#ref-9)</sup> |
+| cuTile | NVIDIA | 2025-12 | ✅ | ✅ | NVIDIA <sup>[[36]](#ref-36)</sup> |
+| TT-Lang | Tenstorrent | 2026 | ✅ | ✅ | Tensix <sup>[[37]](#ref-37)</sup> |
+
+Nine languages, four continents of origin, competing vendors — and no exceptions on either column. The pattern is strong enough that the interesting question is no longer *whether* a new accelerator gets a Python tile DSL, but how quickly.
+
+**Two honest qualifications.** First, "tile-based" spans a real range of abstraction: Triton and cuTile hide the thread hierarchy entirely, while Gluon and CuTe DSL expose layouts, shared memory, and warp specialization — they are tile-shaped but deliberately low-level. Second, the pattern is not universal across *all* accelerator programming: Cerebras ships CSL, a C-like language with Python only as host runtime, and Groq and SambaNova expose no kernel language at all, by design. Those are covered in §2.6. The claim here is about kernel DSLs that exist, not about every vendor choosing to have one.
+
+#### Why tiles: the hardware moved first
+
+The tile abstraction is not a convenience invented by compiler authors. It is a description of what the hardware became. Modern accelerators execute matrix operations on dedicated units that consume and produce blocks — NVIDIA's Tensor Cores, Google's MXU, Ascend's Cube unit — and the surrounding memory hierarchy is organized around staging those blocks in on-chip SRAM. A programming model expressed in scalar threads has to be pattern-matched back into that shape by the compiler; a model expressed in tiles states it directly.
+
+The hardware has continued moving in this direction rather than away from it. Blackwell introduced **TMEM**, a 256 KB per-SM memory dedicated to Tensor Core accumulators and separate from shared memory — a memory space that only makes sense in tile terms. NVIDIA shipped **CUDA Tile IR**, an MLIR-based virtual ISA whose unit of computation is the tile, and then built a **Tile IR backend for OpenAI Triton**. <sup>[[36]](#ref-36)</sup> Their own framing, from that announcement: *"As GPU programming continues to evolve beyond traditional SIMT models toward tile-based abstractions…"* <sup>[[38]](#ref-38)</sup>
+
+That NVIDIA — whose SIMT model *defined* GPU programming for two decades — now describes the field as evolving past it is the strongest available statement that tiles are the destination rather than a detour.
+
+#### Why Python: the developer population moved too
+
+Tiles explain the execution model. They do not explain why the source language is Python, given that every performance argument favours C++.
+
+The reason is that kernel authoring stopped being a specialist activity performed in isolation. Kernels are now written by the same people who write the model, in the same file tree, against tensors that arrive from PyTorch or JAX. `torch.compile` generates Triton by default, which means every user of the dominant training framework is already producing Python-embedded tile kernels whether or not they read them. <sup>[[39]](#ref-39)</sup> A kernel language outside Python pays a permanent tax in glue code, type conversion, and build integration — and, increasingly, in tooling: the profilers, autotuners, and test harnesses all assume a Python object.
+
+There is now a second-order effect worth naming. LLM-based kernel generation (§2.8) trains on public code, and public kernel code is overwhelmingly Python-embedded. Tenstorrent's TT-Lang states the goal explicitly — it is designed for AI agents to auto-translate Triton, CUDA, cuTile, and TileLang kernels into it. <sup>[[37]](#ref-37)</sup> A DSL that is not Python-shaped is harder for a model to write, which is becoming a real adoption cost rather than a hypothetical one.
+
+#### What this settles, and what it does not
+
+The convergence settles the *shape* of the answer: a new datacenter accelerator that wants third-party kernel authors will expose a Python tile DSL, because every other vendor has and because the alternative costs ecosystem access. For Ascend that question is closed — Triton-Ascend, TileLang-Ascend, PyPTO, and PyAsc2 all take this shape (§2.6).
+
+It settles nothing about the two questions that follow, which the rest of §2 addresses: **whose** DSL, and **how much hardware detail** it exposes. Nine languages sharing a syntax family are still nine languages, and §2.1 showed frontier labs choosing among them on grounds of scheduling control, not ergonomics. Convergence on Python and tiles is the floor of the discussion, not its conclusion.
 
 ### 2.3 NVIDIA moves up-stack to Python DSLs
 
@@ -379,6 +421,13 @@ _TODO (Stage 4)._
 | <a name="ref-46"></a>[46] | vLLM-Ascend Kimi K3 / KDA support — **implemented in Triton, not Ascend C**: [`vllm_ascend/ops/triton/kda/`](https://github.com/vllm-project/vllm-ascend/tree/main/vllm_ascend/ops/triton/kda) holds 7 modules with 16 `@triton.jit` kernels ([`chunk_delta_h.py`](https://github.com/vllm-project/vllm-ascend/blob/main/vllm_ascend/ops/triton/kda/chunk_delta_h.py) · [`kda.py`](https://github.com/vllm-project/vllm-ascend/blob/main/vllm_ascend/ops/triton/kda/kda.py) · [`solve_tril.py`](https://github.com/vllm-project/vllm-ascend/blob/main/vllm_ascend/ops/triton/kda/solve_tril.py)), headers attributing the code to flash-linear-attention (MIT). Verified 2026-08-13 | [vllm-ascend](https://github.com/vllm-project/vllm-ascend) |
 | <a name="ref-47"></a>[47] | `Eco-Tech/Kimi-K3-w4a8` — community (not official Huawei) Ascend checkpoint; [`k3_bf16_conversion_manifest.json`](https://huggingface.co/Eco-Tech/Kimi-K3-w4a8/blob/main/k3_bf16_conversion_manifest.json) states "MXFP4 dequantization is lossy and does not reconstruct the original pre-quantization BF16 weights" | [model card](https://huggingface.co/Eco-Tech/Kimi-K3-w4a8) |
 | <a name="ref-32"></a>[32] | `fla-org/flash-linear-attention` — community linear-attention library with a dedicated **`triton_ascend` backend family**: [`fla/modules/backends/triton_ascend/`](https://github.com/fla-org/flash-linear-attention/tree/main/fla/modules/backends/triton_ascend) (layernorm, rotary, l2norm, causal_conv1d, fused cross-entropy) and [`fla/ops/attnres/backends/triton_ascend/`](https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/attnres/backends/triton_ascend). Ascend CI: [`ascend-a2-ci.yml`](https://github.com/fla-org/flash-linear-attention/blob/main/.github/workflows/ascend-a2-ci.yml) | [repo](https://github.com/fla-org/flash-linear-attention) |
+| <a name="ref-33"></a>[33] | JAX Pallas design doc — "On GPUs, we lower Pallas to Mosaic GPU (formerly Triton), and on TPUs, we lower Pallas to Mosaic"; tile/BlockSpec programming model | https://docs.jax.dev/en/latest/pallas/design/design.html |
+| <a name="ref-34"></a>[34] | TileLang, arXiv 2504.17577 (2025-04-24) — "a composable tiled programming model"; repo public since 2025-01-20 | https://arxiv.org/abs/2504.17577 · https://github.com/tile-ai/tilelang |
+| <a name="ref-35"></a>[35] | NVIDIA CuTe DSL — Python DSL shipping with CUTLASS 4.x; `nvidia-cutlass-dsl` first release 4.0.0 on 2025-06-06, latest 4.6.1 (2026-07-13), still marked Beta | https://pypi.org/project/nvidia-cutlass-dsl/#history · https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/overview.html |
+| <a name="ref-36"></a>[36] | NVIDIA CUDA Tile / cuTile — tile-based Python DSL + CUDA Tile IR (MLIR-based); experimental in CUDA 13.1 (2025-12-04), stable in 13.2, Hopper (sm_90) support added in 13.3 (2026-05-26) | https://developer.nvidia.com/blog/nvidia-cuda-13-3-enhances-gpu-development-with-tile-programming-in-c-compiler-autotuning-and-python-updates/ · https://github.com/NVIDIA/cutile-python |
+| <a name="ref-37"></a>[37] | Tenstorrent TT-Lang — "a Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels"; ships `tt-lang` and `tt-lang-sim` (hardware-free simulator); designed for AI-agent translation of Triton/CUDA/cuTile/TileLang kernels | https://github.com/tenstorrent/tt-lang |
+| <a name="ref-38"></a>[38] | NVIDIA, "Advancing GPU Programming with the CUDA Tile IR Backend for OpenAI Triton" (2026-01-30) — "As GPU programming continues to evolve beyond traditional SIMT models toward tile-based abstractions…" | https://developer.nvidia.com/blog/advancing-gpu-programming-with-the-cuda-tile-ir-backend-for-openai-triton/ |
+| <a name="ref-39"></a>[39] | PyTorch 2.x / TorchInductor — "uses a define-by-run loop-level IR to automatically map PyTorch models into generated Triton code on GPUs"; Triton is the default GPU codegen backend for `torch.compile` | https://pytorch.org/get-started/pytorch-2-x/ |
 
 ---
 
