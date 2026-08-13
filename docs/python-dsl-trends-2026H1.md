@@ -160,9 +160,9 @@ The operative rule appears to be: **Tensor-Core-bound GEMM, the flagship attenti
 | Lab / model | Kernel repositories | DSL used | Serves |
 |---|---|---|---|
 | **DeepSeek V4** | TileKernels; FlashMLA; DeepGEMM; DeepEP | **TileLang** (long tail) + CUDA/PTX (hot path) | Sparse attention, MoE EP, FP8/FP4 GEMM, quantization |
-| **Zhipu GLM-5.2** | `THUDM/slime` <sup>[[22]](#ref-22)</sup> | **TileLang** (4 files, ~823 LOC fwd+bwd) + 1 CUDA file | Sparse MLA + lightning indexer (training) |
-| **Alibaba Qwen** | `QwenLM/FlashQLA` <sup>[[23]](#ref-23)</sup> | **TileLang** (41 `.py`, 0 `.cu`) | Gated DeltaNet chunked prefill, fwd + bwd |
-| **Moonshot Kimi K3** | FlashKDA; MoonEP; minitriton <sup>[[24]](#ref-24)</sup> | **CUTLASS/CuTe C++** + **CuTe DSL** (Python) | KDA linear attention; MoE dispatch/combine |
+| **Zhipu GLM-5.2** | `THUDM/slime` <sup>[[22]](#ref-22)</sup> | **TileLang** (4 files, 823 LOC) *adapted from DeepSeek's examples* + borrowed CUDA forward | Sparse MLA + lightning indexer (training) |
+| **Alibaba Qwen 3.8** | `QwenLM/FlashQLA` <sup>[[23]](#ref-23)</sup> | **TileLang only** — 41 `.py`, **0 `.cu`**, 16,149 LOC | Gated DeltaNet chunked prefill, fwd + bwd |
+| **Moonshot Kimi K3** | FlashKDA; MoonEP <sup>[[24]](#ref-24)</sup> | **CUTLASS/CuTe C++** + **CuTe DSL** (Python) | KDA linear attention; MoE dispatch/combine |
 | **MiniMax M3** | `MiniMax-AI/MSA` <sup>[[25]](#ref-25)</sup> | **CuTe DSL + CUDA**; no Triton, no TileLang | Block-sparse attention, FP8/FP4 paged KV |
 | **Tencent Hy3** | `Tencent/hpc-ops` <sup>[[26]](#ref-26)</sup> | **CUDA/CuTe only** — 0 Triton, 0 TileLang | FP8 MoE, inference ops |
 | **OpenAI gpt-oss** | in-repo `gpt_oss/triton/` <sup>[[27]](#ref-27)</sup> | **Triton** (OpenAI owns Triton — dogfooding, not selection) | MXFP4 MoE, attention with sinks |
@@ -175,6 +175,48 @@ Three patterns emerge:
 **Triton has become the reference layer, not the performance layer.** Across this cohort its role is the baseline others benchmark against and retain as a portability fallback. The only lab in the table shipping Triton kernels is **OpenAI**, which created Triton — so `gpt-oss` is dogfooding rather than a competitive selection. Every lab that evaluated Triton as an outside option chose something else for its performance-critical kernels.
 
 **The model repository is no longer a kernel artifact.** Every flagship model repository here ships zero kernels; they arrive separately, weeks to months later, under a different name. Serving is delegated to vLLM or SGLang.
+
+#### Qwen 3.8: a frontier flagship with no C++ at all
+
+The newest release in the set is also the most consequential for this document's argument. Alibaba's **Qwen 3.8** (2026-08-08) is a 2.4T-parameter / 95B-active model whose novel operator — Gated DeltaNet, used in 69 of 92 layers — ships as `QwenLM/FlashQLA`: **41 Python files, zero `.cu` files, 16,149 lines, one language.** <sup>[[23]](#ref-23)</sup>
+
+This is not a high-level convenience wrapper over vendor libraries. A census of the TileLang primitives used shows hand-scheduled, architecture-specific work:
+
+| Primitive | Uses | What it reaches |
+|---|---|---|
+| `T.barrier_arrive` / `T.barrier_wait` | 577 | explicit producer/consumer warp-group synchronization |
+| `T.tcgen05_gemm` | 44 | Blackwell 5th-generation Tensor Cores |
+| `T.tma_copy` | 43 | Tensor Memory Accelerator async copy |
+| `T.set_max_nreg` | 43 | per-warp register budget control |
+| `T.alloc_tmem` | 24 | Blackwell tensor memory allocation |
+| `T.fence_proxy_async` | 82 | async proxy memory ordering |
+
+These are the same hardware capabilities that Gluon was created to expose and that stock Triton withholds (§2.0) — reached here from Python, with no escape to C++. The repository even carries a commit titled *"Add fence.proxy.async to SM90 and SM100 kernels."* Alibaba's own description is explicit about why: they *"use TileLang to build several key fused kernels, and **manually implement warpgroup specialization** to overlap data movement, Tensor Core computation, and CUDA Core computation."* <sup>[[23]](#ref-23)</sup>
+
+The reported result is **2–3× forward and 2× backward speedup over the FLA Triton kernel** across H200, GB200, RTX 5090, and RTX Pro 6000. <sup>[[23]](#ref-23)</sup>
+
+**Why this matters more than the DeepSeek migration.** DeepSeek's two-tier stack is consistent with a reading where DSLs handle only the easy long tail. Qwen refutes that reading: a frontier lab shipped its most performance-critical novel operator, at 2.4T scale, on the newest silicon, **entirely in a Python DSL** — because the DSL exposed the same scheduling primitives CUDA does. The constraint on tile DSLs is *what they expose*, not that they are Python.
+
+Two caveats worth recording. The architecture-specific trees (`chunk/hopper/`, `chunk/blackwell/`, `chunk/blackwell_sm120/`) are three separate implementations of the same mathematics — the DSL delivered portability of *source*, not of *performance*. And Qwen 3.8 shipped with **no technical report**, only a blog post, alongside a licence change away from Apache-2.0 — a disclosure regression relative to earlier Qwen releases.
+
+#### Kimi K3: CuTe throughout, and a revealing Ascend story
+
+Moonshot's **Kimi K3** (2026-07-27, 2.8T / 104B active; 69 KDA layers to 24 Gated-MLA) takes the opposite path from Qwen at every layer: <sup>[[24]](#ref-24)</sup>
+
+| Component | Implementation | Language |
+|---|---|---|
+| KDA linear attention | `FlashKDA` | CUTLASS / CuTe **C++** |
+| MoE dispatch / combine | `MoonEP` | CuTe **DSL** (Python) |
+
+Moonshot's stated reason for CUTLASS is performance — FlashKDA *"substantially outperforms the Triton reference implementation"* — with Triton retained only as a fallback inherited from the community FLA project. <sup>[[24]](#ref-24)</sup> Kimi K3 also ships **no technical report on arXiv**, only a PDF in the repository.
+
+**The Ascend port is the finding.** vLLM-Ascend support for K3 was opened on **K3's release day** and merged four days later — implying pre-release access — but it was written by Huawei and community engineers, not by Moonshot. <sup>[[46]](#ref-46)</sup> What that port required is the point:
+
+> The KDA forward kernel alone is **~2,584 lines of hand-written Ascend C** (`chunk_kda_fwd.cpp`), plus separate hand-written kernels for gate cumulative-sum, layout swap, and MX quantization. <sup>[[46]](#ref-46)</sup>
+
+On NVIDIA, the same operator is ~2,300 lines of CuTe C++ and its communication layer is Python. On Ascend, a new attention architecture required **thousands of lines of hand-written Ascend C within two weeks of the model's release, with no DSL in the path at all.** That is precisely the gap PyAsc2 exists to close, documented with dated file-level evidence.
+
+Two further details sharpen it. First, K3's native **MXFP4** weights cannot be used directly on Ascend A2/A3: the community checkpoint dequantizes MXFP4 to BF16 — its own manifest states the conversion *"is lossy and does not reconstruct the original pre-quantization BF16 weights"* — then re-quantizes to INT W4A8. <sup>[[47]](#ref-47)</sup> Second, **Ascend A5 (950) is the only non-NVIDIA silicon with a native MXFP4 path** matching K3's training format. The quantization gap on Ascend is generational, not architectural — and it closes with A5.
 
 #### Linear attention: one architectural trend, two DSL answers
 
@@ -203,7 +245,13 @@ This is the same conclusion §2.0 reached from the performance data, arrived at 
 
 Two findings cut against a simple pro-DSL reading, and both should be carried forward.
 
-**A DSL kernel cost model quality at Zhipu.** The GLM-5 report states that nondeterministic top-k operators — "e.g. CUDA or **TileLang** implementations" — "caused drastic performance degradation during RL after only a few steps, accompanied by a sharp drop in entropy." They reverted to `torch.topk`. <sup>[[29]](#ref-29)</sup> This is a rare documented case of DSL-kernel nondeterminism directly harming a model, and it explains why determinism appears as a hard requirement below.
+**Nondeterminism cost a training run at Zhipu — and it indicted CUDA first.** The GLM-5 report (§3.2, "DSA RL insights") records that the **nondeterministic CUDA-based top-k implementation used in SGLang's DSA indexer** created a training/inference mismatch; "other non-deterministic top-k operators (e.g., CUDA or TileLang implementations) caused drastic performance degradation during RL after only a few steps, accompanied by a sharp drop in entropy." They reverted to `torch.topk`, which is slower but deterministic. <sup>[[29]](#ref-29)</sup>
+
+It would be a misreading to file this against DSLs. The implementation that failed was **hand-written CUDA**; TileLang appears in an "e.g." list alongside it; the scope is one operator during RL; and Zhipu kept TileLang for sparse MLA and the indexer's own forward and backward in the same codebase. Their actual remedy was to write **more** DSL kernels — a Triton module for route-permutation gradients whose docstring states the contract directly: *"They do not use atomics, and every visible output element has exactly one writer."* <sup>[[22]](#ref-22)</sup>
+
+The defensible conclusion is about **determinism as a contract, not about DSLs**: at RL scale, bitwise reproducibility becomes a correctness property rather than a nicety, and neither CUDA nor TileLang offered a guarantee — so Zhipu chose, operator by operator, whichever implementation it could prove deterministic. A kernel programming model that can *guarantee* determinism has an advantage neither incumbent currently provides.
+
+**Zhipu is a consumer of TileLang, not an author of it.** All four of its GLM-5 TileLang kernels carry `Adapted from` headers pointing at DeepSeek V3.2 examples in the TileLang repository, pinned to specific upstream commits. <sup>[[22]](#ref-22)</sup> Its sparse-MLA module also defines a second path, `SGLangSparseMLA`, documented as *"SGLang FlashMLA forward with the trainable TileLang backward"* — a hand-written CUDA forward borrowed from SGLang, with TileLang supplying the backward pass that no inference library provides. GLM's adoption is therefore downstream of DeepSeek's rather than independent corroboration of it, and its own two-tier split falls on the training/inference boundary.
 
 **Fragmentation is now measurable inside a single file tree.** vLLM's DeepSeek-V4 mHC operator ships **five backends** — CUDA, AITER, TileLang, Triton, and torch — and Qwen's Gated DeltaNet has four independent implementations across three DSLs, with the model author's own TileLang kernel not being the one vLLM serves. <sup>[[23]](#ref-23)</sup> Convergence on tiles as a *model* has not produced convergence on a single implementation.
 
@@ -227,7 +275,9 @@ Three facts here bear directly on this document's argument.
 
 **Demand for Ascend already exists at the frontier — and was not met by published code.** The V4 report states plainly: *"We validated the fine-grained EP scheme on **both NVIDIA GPUs and HUAWEI Ascend NPUs platforms**."* <sup>[[14]](#ref-14)</sup> This is the report's only mention of Ascend. The corresponding open-sourced MegaMoE implementation is CUDA-only; the Ascend implementation was not released.
 
-**Ascend support for these models is real but trails.** vLLM-Ascend ships tutorials for DeepSeek-V4-Pro and V4-Flash, GLM-5.2, Kimi-K2.6, and MiniMax on Atlas A2/A3, and MindSpeed-LLM added GLM-5.2 pretraining scripts two days after the model's release. <sup>[[30]](#ref-30)</sup> <sup>[[31]](#ref-31)</sup> The caveats matter: GLM-5.2 runs at 200K context on Ascend rather than 1M, and Kimi K3 runs from a third-party W4A8 checkpoint rather than its native MXFP4. Alibaba explicitly declined to build Ascend kernels for FlashQLA, citing bandwidth. <sup>[[23]](#ref-23)</sup>
+**Ascend support is real, fast, and written by other people.** vLLM-Ascend ships tutorials for DeepSeek-V4-Pro and V4-Flash, GLM-5.2, Kimi K3, and MiniMax on Atlas A2/A3, and MindSpeed-LLM added GLM-5.2 pretraining scripts two days after that model's release. <sup>[[30]](#ref-30)</sup> <sup>[[31]](#ref-31)</sup> GLM-5.2's full 1M context **is** validated on Ascend — on Atlas 800 A3 with decode context parallelism (`DCP16`); the caveat is hardware tier and feature maturity (the A2 series is not validated at 1M, and DCP with Sparse Flash Attention C8 is marked experimental), not a context ceiling. <sup>[[30]](#ref-30)</sup>
+
+The consistent pattern is that **model labs do not write the Ascend kernels — Huawei and the community do**, quickly and by hand. Alibaba declined outright: asked to support Ascend in FlashQLA, the maintainer replied that they *"do not have sufficient bandwidth in the short term to develop kernels for Ampere, Ada, Ascend NPU, or PPU."* <sup>[[23]](#ref-23)</sup> In the same window, FlashQLA added Blackwell SM103 support in eight days and SM121 in under twenty-four hours. The revealed ordering places every NVIDIA SKU, down to a desktop workstation part, ahead of any NPU.
 
 **The Ascend Triton path is not portable Triton.** vLLM-Ascend's Triton kernels import `triton.language.extra.cann.extension` — Ascend-specific intrinsics, not portable Triton source. <sup>[[30]](#ref-30)</sup> Portability across the GPU/NPU boundary is being asserted more often than it is achieved.
 
@@ -326,6 +376,8 @@ _TODO (Stage 4)._
 | <a name="ref-29"></a>[29] | GLM-5 technical report, arXiv 2602.15763 — §3.2: nondeterministic top-k in "CUDA or TileLang" implementations caused "drastic performance degradation during RL"; reverted to `torch.topk`. Report does not state training hardware and does not mention MindSpore | https://arxiv.org/abs/2602.15763 |
 | <a name="ref-30"></a>[30] | `vllm-project/vllm-ascend` — tutorials for DeepSeek-V4-Pro/Flash, GLM-5.2, Kimi-K2.6, MiniMax on Atlas A2/A3; pins `triton-ascend==3.2.1`; imports `triton.language.extra.cann.extension` (Ascend-specific intrinsics) | https://github.com/vllm-project/vllm-ascend |
 | <a name="ref-31"></a>[31] | `Ascend/MindSpeed-LLM` — GLM-5.2 pretraining scripts added 2026-06-18, two days after model release | https://gitee.com/ascend/MindSpeed-LLM |
+| <a name="ref-46"></a>[46] | vLLM-Ascend Kimi K3 enablement — PR #12950 opened 2026-07-27 (K3 release day), merged 2026-07-31; adds `csrc/attention/chunk_kda_fwd/op_kernel/chunk_kda_fwd.cpp` at ~2,584 lines of hand-written Ascend C, plus KDA gate-cumsum, layout-swap and MX quant kernels. SGLang NPU path merged 2026-08-12 (PR #33465) | https://github.com/vllm-project/vllm-ascend |
+| <a name="ref-47"></a>[47] | `Eco-Tech/Kimi-K3-w4a8` — community (not official Huawei) Ascend checkpoint; `k3_bf16_conversion_manifest.json` states "MXFP4 dequantization is lossy and does not reconstruct the original pre-quantization BF16 weights"; 247,296 converted tensors | https://huggingface.co/Eco-Tech/Kimi-K3-w4a8 |
 | <a name="ref-32"></a>[32] | `fla-org/flash-linear-attention` — community linear-attention kernel library with a `triton_ascend` backend family (KDA, gated-delta-rule); Ascend-specific machinery incl. `ascend_ub_manager.py` and an AI-Core task-time block budget; CI on CANN 9.0.0 | https://github.com/fla-org/flash-linear-attention |
 
 ---
