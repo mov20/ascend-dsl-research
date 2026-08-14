@@ -177,6 +177,58 @@ can hide without paying for it.
 
 ---
 
+## 2026-08-07 — CATLASS DSL: Automation Audit
+
+**Context:** Follow-up question on the CATLASS TLA DSL — are double buffering, UB management, and
+synchronization insertion automated, or explicit programmer work? Result:
+[`docs/catlass-dsl-automation.md`](catlass-dsl-automation.md). Read from the MLIR pass source and all
+44 end-to-end examples; no build or execution.
+
+### Answer
+
+| Concern | Automated? | Detail |
+|---|---|---|
+| Double buffering | **No** | No pass creates or manages it. Programmer allocates each half, names them, maintains the toggle index, writes the select |
+| UB / on-chip memory | **Partial** | Compiler bump-allocates static byte offsets. No liveness, no reuse, no capacity fitting, no spilling. Sizes must be compile-time constant |
+| Sync insertion | **Opt-in, intra-core only** | `auto_sync="v0"` infers intra-core mutexes. `cross_core_*` remains explicit, by the pass's own diagnostic |
+
+### Supporting Detail
+
+**`auto_sync="v0"` is narrower than it sounds.** Four limits from the pass source
+(`TlaInsertAutoMutexPass`, 967 LOC, 23 error paths): cross-core sync is never automated (two separate
+mutex ID spaces, Cube and Vector); it is all-or-nothing, so it cannot be mixed with any hand-placed
+flag or mutex, ruling out incremental adoption; it bails on non-static buffer roots — "changing
+loop-carried pointers are unsupported", which is exactly the deep-pipelining idiom; and it caps at 32
+mutex IDs. Adoption reflects this: **2 of 44 examples** use it, versus 31 using manual flags. The
+flagship Flash Attention kernel does not use it.
+
+**Memory "management" is a bump allocator.** `planTlaScratchAllocations` assigns monotonically
+increasing byte offsets per address space and stops there. Two buffers with disjoint live ranges
+still occupy distinct bytes for the whole kernel. `LocalmemAllocator`, despite the name, is
+stateless (`__slots__ = ()`) and emits the same `alloc_ptr` op — it takes bytes instead of elements,
+nothing more.
+
+**Scale of the remaining manual burden.** Flash Attention: 33 allocations, 33 flags, 7 cross-core
+flags, 200 `set_flag`/`wait_flag` calls, 56 lines of buffer-index bookkeeping, ping/pong encoded in
+identifier names — in 1,400 lines.
+
+**SIMT is the one exception.** `tla.vec.func(mode="simt")` needs no allocation, no flags, no
+buffering — operations lower onto GM memrefs directly. Three ops old, vector-only.
+
+### Reading
+
+The consistent pattern across all three concerns: the compiler analyzes what the programmer wrote and
+fills in bookkeeping; it does not make scheduling decisions. Closer to a typed Python notation for
+Ascend C than to a scheduling compiler — which matches the project's own statement that
+template-style higher-level wrapping remains future work. Nothing on the Q3 2026 roadmap changes the
+buffering or allocation picture.
+
+Reinforces the existing TODO on benchmarking `auto_sync="v0"` overhead: if inferred mutexes are
+conservative, the 75-line saving on basic matmul buys a performance regression, and that trade
+decides whether the feature grows past 2 examples.
+
+---
+
 ## Open TODOs
 
 - [ ] Deep dive into AscendCraft paper — DSL design, host/kernel split, UB/L1 buffer model
