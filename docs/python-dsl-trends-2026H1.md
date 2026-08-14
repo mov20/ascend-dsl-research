@@ -331,7 +331,59 @@ It settles nothing about the two questions that follow, which the rest of §2 ad
 
 ### 2.3 NVIDIA moves up-stack to Python DSLs
 
-_TODO (Stage 1)._
+NVIDIA has the least incentive of any vendor to make kernel authoring portable or easy. CUDA C++ is the moat: two decades of accumulated code, tooling, and expertise that competitors must replicate before their silicon is usable. An abstraction layer above CUDA erodes exactly that advantage.
+
+NVIDIA built two anyway, plus a Python-first rework of the surrounding stack. When the incumbent invests against its own lock-in, the pressure driving it is worth understanding.
+
+#### Two DSLs, not one — and they are constantly confused
+
+The single most common error in this area is treating cuTile and CuTe DSL as versions of the same thing. They are different products, from different teams, at opposite ends of the abstraction range, released six months apart:
+
+| | **cuTile** | **CuTe DSL** |
+|---|---|---|
+| Abstraction | High-level — compiler assigns threads | Low-level — you control the thread/data hierarchy |
+| Analogue | Triton | CUTLASS/CuTe in C++ |
+| Ships with | CUDA Toolkit | CUTLASS 4.x (`nvidia-cutlass-dsl`) |
+| Underlying IR | CUDA Tile IR (MLIR-based) | CuTe layout algebra |
+| First public | 2025-12-04 (CUDA 13.1) <sup>[[36]](#ref-36)</sup> | 2025-06-06 (CUTLASS 4.0) <sup>[[35]](#ref-35)</sup> |
+| Status (2026-08) | Stable since 13.2; Hopper added in 13.3 | **Still Beta** at 4.6.1 |
+
+That NVIDIA needed *both* is the substantive point. A single abstraction level did not cover the range between "write a fused operator quickly" and "extract the last 20% from a new architecture" — the same split visible at DeepSeek (§2.1), at Meta, and inside Triton itself, where the answer to the same gap was Gluon. **No vendor has yet shipped one Python DSL that spans the whole range.**
+
+#### Maturity: both are younger than the announcements suggest
+
+The gap between announcement and production readiness has been substantial in both cases, which matters when judging how fast this space actually moves.
+
+**cuTile** was unveiled at GTC 2025 (March) but shipped **experimental** in CUDA 13.1 (2025-12-04), became a stable feature in 13.2, and only gained **Hopper (sm_90) support in CUDA 13.3 (2026-05-26)** — meaning the flagship H100/H200 generation was unsupported for roughly the first five months of availability. <sup>[[36]](#ref-36)</sup> The `cutile-python` README still states that Hopper support is forthcoming, contradicting the shipped compiler.
+
+**CuTe DSL** launched with CUTLASS 4.0 in June 2025 and remains marked **Beta** at version 4.6.1 (2026-07-13), fourteen months later; documentation targeting graduation "by end of summer" has slipped at least once. <sup>[[35]](#ref-35)</sup> Its own docs state that generated kernels *aim* to match CUTLASS C++ while acknowledging that "some performance gaps may exist due to missing optimizations."
+
+**Performance claims should be treated carefully.** NVIDIA has published no primary cuTile-versus-cuBLAS benchmark; the launch material's quantified speedup figures are for cuBLAS itself, not cuTile. Independent evaluation exists but is third-party. <sup>[[40]](#ref-40)</sup> Any statement that cuTile matches vendor libraries is currently a roadmap claim, not a measured one.
+
+#### The wider Python-first push
+
+The DSLs are part of a broader repositioning that NVIDIA framed at GTC 2025 as the "Year of CUDA Python":
+
+- **`cuda-python`** was restructured into `cuda.core`, `cuda.bindings`, `cuda.cooperative`, and `cuda.parallel`, giving native Python access to the CUDA driver, runtime, and JIT compiler without dropping into C++. `cuda.core` is explicitly still stabilizing. <sup>[[41]](#ref-41)</sup>
+- **Warp**, NVIDIA's longest-standing Python kernel framework, made its tile API (`wp.tile_*`, including cooperative Tensor Core operations) first-class across the 1.10–1.15 series; current release 1.15.0 (2026-07-07). <sup>[[42]](#ref-42)</sup>
+- **nvmath-python** reached 1.0 GA on 2026-07-16, providing stable Python APIs over cuBLAS, cuFFT, cuSOLVER, and cuDSS with both host- and device-side calls. <sup>[[43]](#ref-43)</sup>
+- **cuPyNumeric** (formerly cuNumeric) became fully open source in the 25.03 release (2026-03), offering distributed multi-GPU NumPy semantics with no code changes. <sup>[[44]](#ref-44)</sup>
+
+#### NVIDIA adopting a competitor's front-end
+
+The clearest signal is not any of NVIDIA's own languages. In January 2026 NVIDIA published a **CUDA Tile IR backend for OpenAI Triton** — engineering effort spent making a language they did not write, and which explicitly targets AMD hardware as well, run better on their own. <sup>[[38]](#ref-38)</sup>
+
+A vendor builds a backend for someone else's front-end when that front-end has become the interface its customers already use. NVIDIA's GTC 2025 session on the topic was titled *"Blackwell Programming for the Masses With OpenAI Triton."* <sup>[[45]](#ref-45)</sup>
+
+#### Reading this from Ascend
+
+Three implications carry over.
+
+**The thesis is validated by the least likely party.** If Python tile DSLs were merely a convenience for vendors with weak toolchains, NVIDIA — with the strongest toolchain and the most to protect — would have no reason to build two of them and a Triton backend besides. That it did is evidence the pressure is structural.
+
+**One abstraction level is not enough, and NVIDIA proved it at cost.** cuTile and CuTe DSL exist as a pair because neither alone spans the range. An Ascend strategy that positions a single DSL as covering everything from rapid prototyping to peak extraction is claiming something no vendor has yet demonstrated.
+
+**Announcement-to-maturity is measured in years, not quarters.** cuTile took roughly fourteen months from unveiling to supporting NVIDIA's own flagship generation; CuTe DSL has been Beta for fourteen months and counting — with NVIDIA's resources. This is the realistic calibration for PyAsc2's roadmap in §3.
 
 ### 2.4 Triton as the de-facto cross-vendor standard
 
@@ -428,6 +480,12 @@ _TODO (Stage 4)._
 | <a name="ref-37"></a>[37] | Tenstorrent TT-Lang — "a Python-based Domain-Specific Language (DSL) for authoring high-performance custom kernels"; ships `tt-lang` and `tt-lang-sim` (hardware-free simulator); designed for AI-agent translation of Triton/CUDA/cuTile/TileLang kernels | https://github.com/tenstorrent/tt-lang |
 | <a name="ref-38"></a>[38] | NVIDIA, "Advancing GPU Programming with the CUDA Tile IR Backend for OpenAI Triton" (2026-01-30) — "As GPU programming continues to evolve beyond traditional SIMT models toward tile-based abstractions…" | https://developer.nvidia.com/blog/advancing-gpu-programming-with-the-cuda-tile-ir-backend-for-openai-triton/ |
 | <a name="ref-39"></a>[39] | PyTorch 2.x / TorchInductor — "uses a define-by-run loop-level IR to automatically map PyTorch models into generated Triton code on GPUs"; Triton is the default GPU codegen backend for `torch.compile` | https://pytorch.org/get-started/pytorch-2-x/ |
+| <a name="ref-40"></a>[40] | "Evaluating CUDA Tile for AI Workloads on Hopper and Blackwell GPUs," arXiv 2604.23466 (~2026-04) — independent (non-NVIDIA) evaluation; NVIDIA has published no primary cuTile-vs-cuBLAS benchmark | https://arxiv.org/abs/2604.23466 |
+| <a name="ref-41"></a>[41] | NVIDIA CUDA Python — `cuda.core`, `cuda.bindings`, `cuda.cooperative`, `cuda.parallel`; framed as the "Year of CUDA Python" at GTC 2025. Repo notes the stack is undergoing an overhaul; `cuda.core` still stabilizing | https://developer.nvidia.com/cuda/python · https://github.com/NVIDIA/cuda-python |
+| <a name="ref-42"></a>[42] | NVIDIA Warp — Python kernel framework; tile API (`wp.tile_*`) became first-class across v1.10–1.15; current release v1.15.0 (2026-07-07) | https://github.com/NVIDIA/warp/blob/main/CHANGELOG.md |
+| <a name="ref-43"></a>[43] | `nvmath-python` 1.0 GA (2026-07-16) — stable Python APIs over cuBLAS/cuFFT/cuSOLVER/cuDSS, host- and device-side calls | https://docs.nvidia.com/cuda/nvmath-python/latest/ |
+| <a name="ref-44"></a>[44] | NVIDIA cuPyNumeric 25.03 (2026-03) — fully open source incl. the Legate runtime; distributed multi-GPU NumPy drop-in (renamed from cuNumeric) | https://developer.nvidia.com/blog/nvidia-cupynumeric-25-03-now-fully-open-source-with-pip-and-hdf5-support/ |
+| <a name="ref-45"></a>[45] | NVIDIA GTC 2025 session S72876, "Blackwell Programming for the Masses With OpenAI Triton" (Phil Tillet); same deck reports dense FP16 8192² matmul ~10% behind cuBLAS 12.8 on H100/GB200 | https://www.nvidia.com/en-us/on-demand/session/gtc25-s72876/ |
 
 ---
 
