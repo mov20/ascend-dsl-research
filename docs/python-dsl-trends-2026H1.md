@@ -111,7 +111,7 @@ But LOC alone understates the problem. Real authoring cost also includes **debug
 
 A DSL's programming model is expensive to change once kernels and users depend on it; the operators it must express change with every model generation. The question is whether the programming model can absorb demands that did not exist when it was designed. The 2026 frontier generation has produced four that most tile DSLs cannot express (evidenced in detail in §2.1):
 
-- **Fused compute + collective communication.** Throughout this document, *communication* means **inter-device collectives — all-reduce, all-gather, reduce-scatter, all-to-all — across NPUs and across nodes**, the operations NCCL and HCCL provide. It does **not** mean intra-SoC data movement between Cube and Vector cores, which is a separate concern handled by on-chip synchronization. Large sparse MoE now fuses dispatch, GEMM, activation, and combine into a single pipelined megakernel, overlapping one wave of experts' compute with the next wave's *network* transfer — worth **1.50–1.73×** over non-fused baselines. <sup>[[14]](#ref-14)</sup> No mainstream tile DSL lets a kernel *contain* a collective operation.
+- **Fused compute + collective communication.** Throughout this document, *communication* means **inter-device collectives — all-reduce, all-gather, reduce-scatter, all-to-all — across NPUs and across nodes**, the operations NCCL and HCCL provide. It does **not** mean intra-SoC data movement between Cube and Vector cores, which is a separate concern handled by on-chip synchronization. Large sparse MoE now fuses dispatch, GEMM, activation, and combine into a single pipelined megakernel, overlapping one wave of experts' compute with the next wave's *network* transfer — worth **1.50–1.73×** over non-fused baselines. <sup>[[14]](#ref-14)</sup> No GPU tile DSL lets a kernel *contain* a collective operation; AWS NKI is the one vendor DSL that does (§2.6). <sup>[[90]](#ref-90)</sup>
 - **Low precision as a first-class type.** FP4 weights with FP8 activations and block-wise scale factors, plus quantization fused into epilogues.
 - **Heterogeneous memory layouts.** Compressed and sparse attention variants that place differently-shaped KV state in one paged pool.
 - **Awkward shapes.** Novel residual topologies producing, in one real case, a GEMM with output dimension 24 — DSLs tuned for 128×128 tiles handle these badly.
@@ -295,7 +295,7 @@ Every significant kernel DSL of the period, with the two properties marked:
 |---|---|---|---|---|---|
 | Triton | OpenAI | 2021 | ✅ | ✅ | NVIDIA, AMD |
 | Pallas | Google / JAX | 2023 | ✅ | ✅ | TPU, GPU <sup>[[33]](#ref-33)</sup> |
-| NKI | AWS | 2024-09 | ✅ | ✅ | Trainium <sup>[[30]](#ref-30)</sup> |
+| NKI | AWS | 2024-09 | ✅ | ✅ | Trainium <sup>[[101]](#ref-101)</sup> |
 | TileLang | PKU + MSR | 2025-01 | ✅ | ✅ | GPU, Ascend, MetaX <sup>[[34]](#ref-34)</sup> |
 | CuTe DSL | NVIDIA | 2025-06 | ✅ | ✅ (layout algebra) | NVIDIA <sup>[[35]](#ref-35)</sup> |
 | Gluon | OpenAI | 2025-07 | ✅ | ✅ (explicit layouts) | NVIDIA, AMD |
@@ -535,11 +535,101 @@ Per-shape results range from 0.31× to 2.70×. The average is near parity; the v
 
 ### 2.5 Front-ends going higher-level and autotuned
 
-_TODO (Stage 2)._
+The previous sections established *which* language: Python, tiles, often Triton. This section tracks the *altitude*. The 2025–26 trend is that the programmer writes less and the compiler searches more. The cost has moved from writing kernels to tuning them, and the industry is still learning where that cost belongs.
+
+#### Helion: the search space is the product
+
+Helion went from first PyPI release (2025-05) to **v1.0 in 2026-04** and v1.4 by 2026-07, and became a PyTorch Foundation project in the same month as 1.0. <sup>[[81]](#ref-81)</sup> <sup>[[70]](#ref-70)</sup> It compiles to Triton by default, with TileIR and experimental CuTe DSL backends, and runs CI on H100, B200, and MI325X. <sup>[[81]](#ref-81)</sup> <sup>[[102]](#ref-102)</sup>
+
+Its trade is stated in the README: Helion "spends more time (approx 10 min) autotuning as it evaluates hundreds of potential Triton implementations." The README's own log shows **586.6 s** to search **1,520 configs** for one kernel. <sup>[[81]](#ref-81)</sup> What distinguishes Helion is not that it autotunes — Triton and TileLang do too — but that it **derives the search space from the kernel**. In Triton and TileLang the user still enumerates candidate configs by hand. <sup>[[86]](#ref-86)</sup>
+
+| Front-end | Who defines the search space | Built-in search |
+|---|---|---|
+| Triton | User (`triton.Config` list) | Exhaustive over the list, disk-cached |
+| TileLang | User grid, or Carver roofline hints | Parallel compile + validation <sup>[[86]](#ref-86)</sup> |
+| JAX Pallas | None built in; Tokamax add-on, "still heavily under development" | Tokamax autotune <sup>[[87]](#ref-87)</sup> |
+| **Helion** | **Compiler, from the kernel** | Bayesian optimization (LFBO) by default <sup>[[84]](#ref-84)</sup> |
+
+#### Tuning has moved offline
+
+Online autotuning does not survive contact with serving. Helion's deployment guide now says production "should generate autotuned configs ahead of time," then fits a **decision tree** over measurements that picks a config per shape "in microseconds." <sup>[[82]](#ref-82)</sup> Red Hat's port of vLLM kernels to Helion shows why: a full sweep of `scaled_mm` over 168 shapes "can take an entire day," and Helion's dispatch adds "tens of microseconds of CPU overhead per kernel launch," making CUDA graphs mandatory. <sup>[[83]](#ref-83)</sup>
+
+The same port gives the honest performance picture *(vendor-adjacent)*: fused quantization and normalization kernels at **1.13–2.33×** over `torch.compile` and vLLM's CUDA kernels, but `scaled_mm` at **1.08× CUTLASS on H100 and 0.74× on B200**, and **1.05–1.09×** end to end. <sup>[[83]](#ref-83)</sup> Autotuning wins where the search space is rich and the baseline is generic; it loses where a new architecture needs code generation the backend does not yet have.
+
+#### The search itself is getting smarter
+
+- **LLM-guided search.** An LLM proposing configs matched Helion's Bayesian default (geomean **1.009×**) with ~55 instead of ~546 configs, **39 s vs 261 s** wall-clock on 11 kernels × 3 shapes on B200. It trailed by >5% in 8 of 33 cases; an LLM-seeded hybrid closed 6 of those at ~3× lower cost. <sup>[[84]](#ref-84)</sup>
+- **Compiler-flag search.** NVIDIA's CompileIQ (CUDA 13.3, 2026-05) runs a genetic search over internal `ptxas`/`nvcc` knobs, claiming "up to 15%" on Triton attention and CUTLASS GEMM. The worked example spent 9 min 29 s for a 1.01× gain. <sup>[[85]](#ref-85)</sup> This, not cuTile, is the "compiler autotuning" in the CUDA 13.3 release. <sup>[[36]](#ref-36)</sup>
+
+#### Higher-level APIs reach peak through templates, not through the compiler
+
+FlexAttention is the cleanest test case. Users write `score_mod` and `mask_mod` in Python; Inductor lowers them. On Hopper it fell from ~80% to **~60% of FlashAttention-3**, because warp-specialized pipelines "aren't expressible in our Triton-based implementation." The fix was not a smarter compiler: Inductor now emits CuTe DSL snippets inlined into the hand-written FlashAttention-4 template, **1.6–3.2× faster forward** on GB200 than the Triton path. <sup>[[88]](#ref-88)</sup>
+
+The pattern is worth naming: **the high-level API stays, and the expert kernel becomes a parameterized template underneath it.** ThunderKittens 2.0 (2026-02) takes the opposite position — a C++-embedded DSL that matches cuBLAS on B200 with no autotuning, and argues against "another DSL or standalone compiler" for megakernels. <sup>[[89]](#ref-89)</sup>
+
+#### Costs the trend creates
+
+- **Nondeterminism.** Tokamax warns that "autotuning is fundamentally non-deterministic… different configs… can lead to different numerics." <sup>[[87]](#ref-87)</sup> §2.1 showed determinism is now a hard production requirement.
+- **Cold start and recompilation.** The first call pays the full tuning cost; FlexAttention bakes captured scalars into the kernel, so each new value recompiles. <sup>[[88]](#ref-88)</sup>
+- **The converged answer**: tune offline, ship configs as artifacts, dispatch by shape lookup at runtime. <sup>[[82]](#ref-82)</sup>
+
+#### Reading this from Ascend
+
+**Offline tuning is a first-release feature, not a later optimization.** PyAsc2 should ship with ahead-of-time tuning, serializable configs, and deterministic shape-based dispatch. On Ascend the search space includes UB partitioning and Cube/Vector split, which is larger than a GPU's; a compiler-derived search space, as in Helion, matters more here, not less.
+
+**Plan for templates.** FlexAttention on FlashAttention-4 is the working model for reaching peak from a high-level API. For Ascend, that means user Python callables inlined into expert-written Cube/Vector pipelines — the role CATLASS already plays in C++ — rather than expecting the compiler to discover the pipelining itself.
 
 ### 2.6 Every non-NVIDIA datacenter vendor ships a Python DSL
 
-_TODO (Stage 2)._
+The §2.2 table showed nine DSLs from competing vendors. This section asks the vendor question directly: for each datacenter accelerator, what does a kernel author write in Python?
+
+#### The vendor map, 2026-09
+
+| Vendor | Chip | Python kernel path | Own language? | First public |
+|---|---|---|---|---|
+| AMD | MI300/MI355 | Triton (upstream) + **FlyDSL**, Wave | ✅ FlyDSL, Wave | FlyDSL 2025-11; Wave 2025-07 <sup>[[91]](#ref-91)</sup> <sup>[[92]](#ref-92)</sup> |
+| Google | TPU | Pallas → Mosaic | ✅ | 2023 <sup>[[33]](#ref-33)</sup> |
+| AWS | Trainium 2/3 | **NKI**, stable since 2026-04 | ✅ | 2024-09 <sup>[[90]](#ref-90)</sup> |
+| Tenstorrent | Tensix | TT-Lang | ✅ | 2025-10 <sup>[[37]](#ref-37)</sup> |
+| **Huawei** | **Ascend** | Triton-Ascend, TileLang-Ascend, pyasc, PyPTO, CATLASS DSL | ✅ several | 2025-05 onward <sup>[[61]](#ref-61)</sup> <sup>[[98]](#ref-98)</sup> |
+| Microsoft | Maia 200 | Triton in the Maia SDK; low-level "NPL" | Triton | 2026-01 <sup>[[93]](#ref-93)</sup> |
+| Meta | MTIA | Triton-MTIA + extensions | Triton | production 2026 <sup>[[69]](#ref-69)</sup> |
+| Intel | Xe GPU | Triton (XPU backend) | Triton | 2023 <sup>[[74]](#ref-74)</sup> |
+| ~10 Chinese vendors | Cambricon, Hygon, MetaX, Moore Threads, Iluvatar, Kunlunxin, Enflame, others | Triton via FlagTree; TileLang forks for MetaX, Moore Threads, Hygon | Triton / TileLang | 2024–2026 <sup>[[67]](#ref-67)</sup> <sup>[[96]](#ref-96)</sup> <sup>[[97]](#ref-97)</sup> |
+| Intel | Gaudi | **None** (TPC-C); a third-party Triton backend PR was closed unmerged in 2026-09 | ❌ | — <sup>[[95]](#ref-95)</sup> |
+| Cerebras | WSE-3 | **None**; CSL is the kernel language, Python is host-only | ❌ | — <sup>[[94]](#ref-94)</sup> |
+
+**The headline needs a correction.** "Every vendor ships a Python DSL" is true only if a Triton backend counts. Most vendors — Microsoft, Meta, Intel, and the Chinese GPU makers — ship Triton, not a language of their own. Only five ship their own Python kernel language: Google, AWS, AMD, Tenstorrent, and Huawei. Two datacenter architectures have no Python kernel path at all: Intel Gaudi and Cerebras.
+
+#### Four findings across vendors
+
+**1. Owners of distinctive silicon build their own language.** Google (systolic TPU), AWS (Trainium), Tenstorrent (mesh of RISC-V cores), and Huawei (split Cube/Vector with Unified Buffer) all depart furthest from the GPU execution model — and all built their own DSL. Vendors whose hardware is GPU-shaped, including every Chinese GPU maker, took Triton. AMD is the one GPU vendor with its own languages, and it built them for the peak tier, not instead of Triton. The more a chip differs from a GPU, the less a GPU-shaped language carries over.
+
+**2. Big vendors copy NVIDIA's two-tier shape.** AMD pairs upstream Triton with FlyDSL, a CuTe-style layout-algebra DSL already shipping production MoE kernels through AITER. <sup>[[91]](#ref-91)</sup> <sup>[[72]](#ref-72)</sup> Huawei's stack has the same shape: Triton-Ascend and TileLang-Ascend on top, CATLASS DSL — a CuTe-style Python front-end on AscendNPU-IR — and pyasc below. <sup>[[100]](#ref-100)</sup>
+
+**3. AWS is the only vendor whose DSL owns collectives.** NKI 0.3.0 (2026-04) left Beta with a CPU simulator and an `nki.collectives` module — all-reduce, all-gather, reduce-scatter, all-to-all, and variable-length all-to-all — callable from inside a kernel across rank-based replica groups. <sup>[[90]](#ref-90)</sup> That is the in-kernel compute-plus-communication capability §2.0 lists as the extensibility frontier. It shows the capability can live in a vendor DSL; it is absent from every GPU tile DSL.
+
+**4. China has two shared trunks, not one.** FlagTree carries ~15 Chinese backends on Triton, each "based on different versions of Triton." <sup>[[67]](#ref-67)</sup> TileLang carries a second set — Ascend, MetaX, Moore Threads, Hygon — as out-of-tree forks. <sup>[[96]](#ref-96)</sup> Moore Threads open-sourced TileLang-MUSA in 2026-01; Hygon's fork appeared in 2026-06. A Chinese accelerator vendor now typically supports both.
+
+#### Huawei: the most front-ends of any vendor
+
+| Front-end | Owner / host | Tier | First public | Target |
+|---|---|---|---|---|
+| Triton-Ascend | Huawei, in `triton-lang` org | High, portable-shaped | 2025-05 | A2/A3/950 <sup>[[61]](#ref-61)</sup> |
+| TileLang-Ascend | `tile-ai` community | High | 2025-09 | A2/A3 <sup>[[99]](#ref-99)</sup> |
+| PyPTO | CANN | Graph/tile | 2025-12 | A2/A3/950 <sup>[[98]](#ref-98)</sup> |
+| pyasc (and PyAsc2) | CANN | Native tile | 2025-11 (PyPI) | A2/A3/950 <sup>[[98]](#ref-98)</sup> |
+| CATLASS DSL | CANN | Low, template/layout | 2026-05, unreleased | 950 only <sup>[[100]](#ref-100)</sup> |
+
+No other vendor, NVIDIA included, has five public Python front-ends for one chip family. NVIDIA has more tiers (§2.3), but it publishes one IR contract under them — CUDA Tile IR — and names each tier's audience. Huawei's front-ends lower to at least two different targets, Ascend C and AscendNPU-IR, and no published map assigns them tiers or audiences. Two of the five are hosted outside Huawei.
+
+#### Reading this from Ascend
+
+**Ascend is in the "own language" group by necessity, not preference.** Its hardware is among the least GPU-like in the table. The per-vendor pattern says a Triton backend alone will not reach peak on such hardware, which is also what §2.4 found on the evidence.
+
+**The problem is not missing DSLs but too many without a map.** The §2.3 conclusion applies directly: name the tier and audience of each front-end, and publish one IR contract they share. AscendNPU-IR is the natural candidate, since Triton-Ascend and CATLASS DSL already lower to it.
+
+**NKI shows in-kernel collectives are shippable.** If Ascend wants the megakernel workloads of §2.1, HCCL operations inside a PyAsc2 kernel are a concrete, precedented feature — not a research problem.
 
 ### 2.7 Customer and production adoption
 
@@ -663,6 +753,28 @@ _TODO (Stage 4)._
 | <a name="ref-78"></a>[78] | Qualcomm `hexagon-mlir` (2025-12) and blog "Build faster on Hexagon NPU: Triton/PyTorch with hexagon-mlir" (2026-02) | https://github.com/qualcomm/hexagon-mlir · https://www.qualcomm.com/developer/blog/2026/02/build-faster-on-hexagon-npu-tritor-pytorch-with-hexagon-mlir-open-source |
 | <a name="ref-79"></a>[79] | `kernelize-ai/triton-tenstorrent` — third-party Triton plugin for Tenstorrent (created 2025-09-16) | https://github.com/kernelize-ai/triton-tenstorrent/blob/main/README.md |
 | <a name="ref-80"></a>[80] | `triton-lang/triton-cpu` — experimental CPU backend fork (created 2024-05-10) | https://github.com/triton-lang/triton-cpu/blob/main/README.md |
+| <a name="ref-81"></a>[81] | Helion [README](https://github.com/pytorch/helion/blob/main/README.md) — "spends more time (approx 10 min) autotuning"; log "Autotuning complete in 586.6s after searching 1520 configs"; Triton default, TileIR and experimental CuTe DSL backends. First PyPI 0.0.1 (2025-05-04); v1.0.0 (2026-04-03); v1.4.0 (2026-07-29) | https://pypi.org/project/helion/#history · https://github.com/pytorch/helion/releases/tag/v1.0.0 · https://github.com/pytorch/helion/releases/tag/v1.4.0 |
+| <a name="ref-82"></a>[82] | Helion deployment autotuning guide — configs "ahead of time"; `quick` vs `full` effort; AOT decision-tree dispatch "in microseconds" | https://github.com/pytorch/helion/blob/main/docs/deployment_autotuning.md |
+| <a name="ref-83"></a>[83] | PyTorch blog, "Portable vLLM Model Inference Kernels in Helion" (Red Hat, 2026-06-10) — `scaled_mm` 168-shape sweep "can take an entire day"; "tens of microseconds of CPU overhead per kernel launch"; kernel speedups 1.13–2.33×; `scaled_mm` 1.08× CUTLASS (H100), 0.74× (B200); 1.05–1.09× end to end | https://pytorch.org/blog/portable-vllm-model-inference-kernels-in-helion/ |
+| <a name="ref-84"></a>[84] | PyTorch blog, "From Minutes to Seconds: LLM-Guided Autotuning for Helion Kernels" (2026-06-24) — 11 kernels × 3 shapes on B200; geomean 1.009× vs LFBO; ~55 vs ~546 configs; 39 s vs 261 s | https://pytorch.org/blog/from-minutes-to-seconds-llm-guided-autotuning-for-helion-kernels/ |
+| <a name="ref-85"></a>[85] | NVIDIA blog, "Extract More Kernel Performance with NVIDIA CompileIQ Auto-Tuning" (CUDA 13.3) — "up to 15%"; worked example 9 min 29 s for 1.01× | https://developer.nvidia.com/blog/extract-more-kernel-performance-with-nvidia-compileiq-auto-tuning/ |
+| <a name="ref-86"></a>[86] | TileLang autotuning — `@tilelang.autotune(configs=...)`, parallel compile, validation, cache; Carver `recommend_hints` | https://github.com/tile-ai/tilelang/blob/main/docs/programming_guides/autotuning.md · https://github.com/tile-ai/tilelang/blob/main/docs/tutorials/auto_tuning.md |
+| <a name="ref-87"></a>[87] | `openxla/tokamax` README — JAX kernel library with autotuning, "still heavily under development"; "autotuning is fundamentally non-deterministic" | https://github.com/openxla/tokamax/blob/main/README.md |
+| <a name="ref-88"></a>[88] | PyTorch blog, "FlexAttention + FlashAttention-4: Fast and Flexible" (2026-03-04) — Hopper ~80% → ~60% of FA3; warp specialization not expressible in Triton implementation; CuTe DSL on FA4 template 1.6–3.2× fwd, 1.85–2.3× bwd on GB200 | https://pytorch.org/blog/flexattention-flashattention-4-fast-and-flexible/ |
+| <a name="ref-89"></a>[89] | Hazy Research, "ThunderKittens 2.0" (2026-02-19) | https://hazyresearch.stanford.edu/blog/2026-02-19-tk-2 |
+| <a name="ref-90"></a>[90] | AWS Neuron SDK 2.29.0 (2026-04-09) — "NKI 0.3.0 is now out of Beta and Stable"; CPU simulator; `nki.collectives.all_to_all_v`. NKI first public 2024-09. [`nki.collectives`](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/api/nki.collectives.html): all_reduce, all_gather, reduce_scatter, all_to_all, collective_permute, ReplicaGroup | https://awsdocs-neuron.readthedocs-hosted.com/en/latest/about-neuron/whats-new.html · https://aws.amazon.com/about-aws/whats-new/2026/04/announcing-neuron-2-29/ |
+| <a name="ref-91"></a>[91] | AMD `ROCm/FlyDSL` (repo 2025-11-23) — Python DSL + MLIR, CuTe-style layouts; AITER lists FlyDSL as a dependency | https://github.com/ROCm/FlyDSL/blob/main/README.md · https://github.com/ROCm/aiter/blob/main/README.md |
+| <a name="ref-92"></a>[92] | `iree-org/wave` — AMD-backed Python kernel DSL on IREE/MLIR (1.0.0-beta.1, 2025-07-22) | https://github.com/iree-org/wave/blob/main/README.md |
+| <a name="ref-93"></a>[93] | Microsoft, "Maia 200: the AI accelerator built for inference" (2026-01-26) — SDK preview with a Triton compiler and low-level NPL | https://blogs.microsoft.com/blog/2026/01/26/maia-200-the-ai-accelerator-built-for-inference/ |
+| <a name="ref-94"></a>[94] | Cerebras SDK documentation — CSL kernel language; Python host runtime (`SdkRuntime`) | https://sdk.cerebras.ai/ |
+| <a name="ref-95"></a>[95] | `triton-lang/triton` PR #11545, "Add experimental Gaudi2 backend support" — closed unmerged 2026-09-02 | https://github.com/triton-lang/triton/pull/11545 |
+| <a name="ref-96"></a>[96] | TileLang backend table (Ascend, MetaX, MUSA, Hygon as ecosystem forks) and Moore Threads TileLang-MUSA programming guide | https://github.com/tile-ai/tilelang/blob/main/README.md · https://github.com/MooreThreads/tilelang_musa/blob/main/docs/tilelang_musa_programming_guide.md |
+| <a name="ref-97"></a>[97] | `Cambricon/triton-linalg` — Cambricon's Triton-to-Linalg front-end (2024-05) | https://github.com/Cambricon/triton-linalg |
+| <a name="ref-98"></a>[98] | Huawei CANN Python front-ends — `pyasc` on PyPI (0.0.1 2025-11-19; 1.1.1 2026-03-31); PyPTO on gitcode (2025-12) | https://pypi.org/project/pyasc/#history · https://gitcode.com/cann/pypto |
+| <a name="ref-99"></a>[99] | `tile-ai/tilelang-ascend` — TileLang adapter for Ascend A2/A3 | https://github.com/tile-ai/tilelang-ascend |
+| <a name="ref-100"></a>[100] | This repo's CATLASS TLA DSL analysis — Python front-end on AscendNPU-IR, 950 only, first commit 2026-05-16, never in a tagged release | [`catlass-dsl-analysis.md`](catlass-dsl-analysis.md) |
+| <a name="ref-101"></a>[101] | AWS Neuron Kernel Interface (NKI) documentation — Python kernel DSL for Trainium/Inferentia | https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/index.html |
+| <a name="ref-102"></a>[102] | PyTorch Foundation TAC issue #26 (Helion) — CI on H100, B200, MI325X; users: vLLM, IBM Research, Meta internal teams | https://github.com/pytorch-fdn/tac/issues/26 |
 
 ---
 
