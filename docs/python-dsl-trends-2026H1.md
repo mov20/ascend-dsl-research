@@ -633,19 +633,161 @@ No other vendor, NVIDIA included, has five public Python front-ends for one chip
 
 ### 2.7 Customer and production adoption
 
-_TODO (Stage 3)._
+Announcements say what vendors want. Repository contents say what engineers ship. This section counts Python-DSL kernels in the serving and training stacks that carry real traffic.
+
+#### Where the kernels are, 2026-09
+
+Counts from repository heads on 2026-09-19 *(post-H1 snapshot)*. `@triton.jit` decorators exclude tests and benchmarks; CuTe DSL and cuTile are counted as files importing `cutlass.cute` or `cuda.tile`. These are lower bounds, and they measure breadth, not importance. <sup>[[103]](#ref-103)</sup>
+
+| Repository | Triton kernels | CuTe DSL files | cuTile files | Helion ops | Native C++ |
+|---|---|---|---|---|---|
+| vLLM | 642 | 32 | 0 | 7 | 170 `.cu/.cuh` |
+| SGLang | 768 | 67 | 0 | 3 | 276 `.cu/.cuh` |
+| FlashInfer | 54 | **452** | 24 | 0 | 2,639 `.cu/.cuh` |
+| Liger-Kernel | 195 (106 Ascend-only) | 29 | 27 | 0 | — |
+| **vLLM-Ascend** | 140 | — | — | — | **61 Ascend C ops** |
+
+#### Five findings
+
+**1. Triton is the bulk layer of open serving.** vLLM and SGLang each carry 600–800 Triton kernels, concentrated in attention variants, Mamba and linear-attention ops, LoRA, and fused MoE. <sup>[[103]](#ref-103)</sup> Both also import OpenAI's `triton_kernels` package for gpt-oss MoE, making a frontier lab's Triton code a shared dependency. <sup>[[27]](#ref-27)</sup>
+
+**2. CuTe DSL became the second production Python DSL in about a year.** FlashInfer, the attention library under both engines, adopted it in 2025-08 and now has 452 CuTe DSL files against 54 Triton kernels. TensorRT-LLM ships block-scaled grouped GEMM, MoE, attention, and top-k in CuTe DSL since 2025-09. <sup>[[104]](#ref-104)</sup> <sup>[[105]](#ref-105)</sup> The peak-performance tier is moving from C++ templates to Python, as §2.3 predicted.
+
+**3. cuTile entered production stacks within six months, with small footprints.** TensorRT-LLM holds two cuTile RMSNorm kernels (2026-02); FlashInfer added a cuTile GEMM backend (2026-06); Liger-Kernel has 27 cuTile files (2026-05). <sup>[[105]](#ref-105)</sup> <sup>[[103]](#ref-103)</sup> The rollout pattern is NVIDIA-adjacent contributors placing kernels directly in the libraries people already use.
+
+**4. PyTorch itself became a multi-DSL code generator.** Inductor's codegen directory now contains backends for Triton, CuTe DSL, Pallas, and AMD's FlyDSL. <sup>[[107]](#ref-107)</sup> Google's vLLM TPU backend is Pallas throughout, from ragged paged attention to fused MoE. <sup>[[108]](#ref-108)</sup> Helion's production evidence is still thin: vLLM ships 7 Helion ops, all quantization, normalization, or RoPE fusions, and Meta's claim of beating expert-tuned Triton and CuTe DSL kernels internally comes without data. <sup>[[102]](#ref-102)</sup> <sup>[[106]](#ref-106)</sup>
+
+**5. On Ascend, Ascend C owns the hot path and Triton-Ascend owns the long tail.** vLLM-Ascend carries **61 Ascend C custom ops** — MLA, sparse attention, MC2 dispatch and combine — and **140 Triton kernels** for linear attention, sampling, RoPE, and norms, some marked "code copied from the flash-linear-attention project." <sup>[[109]](#ref-109)</sup> SGLang's NPU kernel repo is predominantly C++. Liger-Kernel's Ascend set is 106 forked Triton kernels plus a UB manager that exists "to help Triton kernels avoid UB overflow errors." <sup>[[66]](#ref-66)</sup>
+
+**Counter-evidence.** Kernel counts overstate the Python share of *time*. The hottest paths — paged and flash attention, dense GEMM, MoE communication — still come mostly from C++ libraries: FlashAttention-3/4, DeepGEMM, CUTLASS, DeepEP (§2.1).
+
+#### Reading this from Ascend
+
+**PyAsc2's credible entry point is the 61 Ascend C ops, not the Triton long tail.** Triton-Ascend already serves the long tail, and it is where portability matters. The hot path is where Ascend C's cost is highest and where a DSL at ≈90% of Ascend C would replace hand-written code rather than duplicate Triton.
+
+**Adoption happens by pull request, not by announcement.** NVIDIA got cuTile into three production libraries in six months by contributing kernels there. PyAsc2 needs the same campaign against vLLM-Ascend, SGLang's NPU kernels, and Liger's Ascend backend — the last of which documents UB overflow as the problem PyAsc2 automates away. <sup>[[11]](#ref-11)</sup>
 
 ### 2.8 LLM / agentic kernel generation
 
-_TODO (Stage 3)._
+If LLMs write a growing share of kernels, the question for a new DSL changes from "can humans learn it?" to "can models write it?" The 2025–26 evidence answers both parts: models generate GPU kernels usefully, generate Ascend C very badly, and recover when an intermediate DSL is placed between them and Ascend C.
+
+#### Model-generated kernels work, with a verification problem
+
+- **The benchmark.** KernelBench (2025-02) gave 250 PyTorch-to-kernel tasks; frontier models beat PyTorch in under 20% of cases at launch. Its harness now accepts CUDA, Triton, CuTe DSL, TileLang, ThunderKittens, and HIP back-ends — but not Ascend. <sup>[[110]](#ref-110)</sup>
+- **Inference-time scaling works.** NVIDIA's DeepSeek-R1 loop produced numerically correct kernels for 100% of KernelBench Level-1 and 96% of Level-2 at 10–20 minutes per problem. <sup>[[115]](#ref-115)</sup>
+- **Triton is harder for models than its popularity suggests.** Specialized Triton models and agents — Meta's KernelLLM, AutoTriton, AMD's GEAK — report modest correctness, and TritonBench concludes that state-of-the-art LLMs "struggle to generate efficient Triton operators." <sup>[[116]](#ref-116)</sup>
+- **It is in production.** Meta's KernelEvolve generates Triton and CuTe DSL for production recommendation models across NVIDIA, AMD, and MTIA, reporting 100% pass on all 250 KernelBench problems. <sup>[[117]](#ref-117)</sup> Google's AlphaEvolve found a 23% speedup on a Gemini matmul kernel, worth 1% of training time. <sup>[[118]](#ref-118)</sup>
+- **Reward hacking is a first-order risk.** Sakana withdrew 10–100× speedup claims traced to a harness exploit. <sup>[[111]](#ref-111)</sup> METR had to repair flawed and cacheable tasks before measuring. <sup>[[112]](#ref-112)</sup> Cognition documented models wrapping the PyTorch reference in try/except fallbacks. <sup>[[113]](#ref-113)</sup> A 2026-06 study shows allclose-style checks certify buggy Triton kernels. <sup>[[114]](#ref-114)</sup>
+
+#### Target language matters more than model choice
+
+MultiKernelBench ran the same 285 tasks on three platforms. Best greedy Pass@1: <sup>[[119]](#ref-119)</sup>
+
+| Target | Best Pass@1 | Model |
+|---|---|---|
+| CUDA | 47.0% | Claude Sonnet 4 |
+| Pallas | 8.4% | Claude Sonnet 4 |
+| **Ascend C** | **2.5%** | DeepSeek-V3 |
+
+The paper's diagnosis: "74.8% of compilation failures contain the keyword 'no member named,'" meaning models invent Ascend C APIs they have not seen. <sup>[[119]](#ref-119)</sup> AscendKernelGen found general models "near-zero" on complex Ascend kernels; domain fine-tuning raised Level-2 compilation from **0% to 95.5%** (Pass@10) and correctness to **64.3%**. <sup>[[121]](#ref-121)</sup>
+
+**The DSL route works best.** AscendCraft has the model write a lightweight DSL that "explicitly model[s] Ascend-specific execution semantics," then transcompiles it to Ascend C. It reaches **98.1% compilation, 90.4% correctness**, with **46.2%** of kernels matching or beating PyTorch eager. <sup>[[120]](#ref-120)</sup> Optimizing Triton-Ascend with compiler-grounded diagnosis yields **4.35× geomean** from initial to optimized kernels on 37 Ascend 950 entries *(post-H1, 2026-07)*. <sup>[[122]](#ref-122)</sup>
+
+#### Training data: scarcity is real, but not the whole story
+
+GitHub code search on 2026-09-19 gives an approximate public-corpus proxy (gitee and gitcode excluded): <sup>[[123]](#ref-123)</sup>
+
+| Marker | Files |
+|---|---|
+| `__global__ void` (CUDA) | ~519k |
+| `@triton.jit` | ~162k |
+| `__aicore__` (Ascend C) | ~63k |
+| `import cutlass.cute` | ~13.8k |
+| `import tilelang` | ~7.6k |
+| `import helion` / `import cuda.tile` | ~2.9k / ~1.7k |
+
+Ascend C is not absent: it has more public files than CuTe DSL, which models write well enough for production. The failure is better explained by API churn and semantic difficulty — explicit synchronization and Unified Buffer handling — than by corpus size alone. A new DSL starts near zero, as cuTile and Helion show; what helps is familiar syntax, a public benchmark back-end, and agent-facing documentation. Tenstorrent designed TT-Lang explicitly for agent translation from Triton, CUDA, cuTile, and TileLang. <sup>[[37]](#ref-37)</sup>
+
+#### Reading this from Ascend
+
+**The strongest Ascend result is an argument for a DSL.** AscendCraft's 90.4% versus MultiKernelBench's 2.5% is the difference between a model writing a regular, semantics-explicit description and a model writing Ascend C. PyAsc2 is the compiler-verified version of that intermediate: the DSL AscendCraft needed, with a real compiler instead of four LLM transcompilation passes.
+
+**Ship verification with the language.** Given the reward-hacking record, PyAsc2 tooling should include hard correctness oracles — randomized shapes, fp64 references, tolerance audits — and a PyAsc2 back-end for KernelBench or MultiKernelBench, so model quality on Ascend becomes measurable in public.
 
 ### 2.9 Standardization and interop pressure
 
-_TODO (Stage 3)._
+No standard front-end is emerging. What is standardizing is the infrastructure under and around the languages: the compiler substrate, the calling convention, and the tensor handoff.
+
+#### MLIR is the shared substrate
+
+Triton, CUDA Tile IR, CuTe DSL, AMD FlyDSL, Pallas/Mosaic, and AscendNPU-IR are all built on MLIR. <sup>[[124]](#ref-124)</sup> <sup>[[91]](#ref-91)</sup> <sup>[[131]](#ref-131)</sup> The notable exception is TileLang, built on TVM. MLIR does not make DSLs interoperable — each owns its dialects — but it makes each one cheaper to build and lets passes move between projects.
+
+#### Only NVIDIA has published a tile IR as a contract
+
+CUDA Tile IR ships as an open-source MLIR dialect with bytecode, a formal specification, and a **conformance test suite**. <sup>[[124]](#ref-124)</sup> That is what turns an IR into a target others can build on (§2.3). No cross-vendor tile IR exists. At the graph level, StableHLO commits to 5 years of backward and 2 years of forward compatibility; nothing comparable exists at the kernel level. <sup>[[129]](#ref-129)</sup> The UXL Foundation remains a C++/SYCL effort with no Python tile-DSL workstream. <sup>[[130]](#ref-130)</sup>
+
+#### Multi-backend front-ends are the new interop layer
+
+- **Helion** is foundation-governed and registers six back-ends: Triton, TileIR, Pallas, CuTe DSL, Metal, and FlyDSL. There is no Ascend back-end. <sup>[[126]](#ref-126)</sup> <sup>[[70]](#ref-70)</sup>
+- **Inductor** generates Triton, CuTe DSL, Pallas, and FlyDSL (§2.7). <sup>[[107]](#ref-107)</sup>
+- **Triton's org** now hosts out-of-tree back-ends and the runtime extension layer `triton-ext`; Triton-Ascend lowers through upstream Linalg into HIVM and AscendNPU-IR. <sup>[[125]](#ref-125)</sup> <sup>[[72]](#ref-72)</sup>
+
+Portability at this layer comes from **delegating** to other DSLs, not from a common IR. A hardware vendor that is not a registered back-end of Helion and Inductor sees those front-ends only indirectly.
+
+#### The ABI layer is standardizing fastest
+
+- **`torch.library` custom ops are the de-facto kernel ABI.** vLLM registers roughly 165 ops this way through one helper. <sup>[[127]](#ref-127)</sup>
+- **Apache TVM-FFI** (2025-09) calls itself the "Open ABI and FFI for Machine Learning Systems" and is used by FlashInfer, TileLang, and CuTe DSL. <sup>[[127]](#ref-127)</sup>
+- **DLPack** reached v1.3 in 2026-01; CuTe DSL and cuTile both accept DLPack tensors. <sup>[[128]](#ref-128)</sup>
+
+A kernel written in any DSL reaches production through these three. They cost little to adopt and are what serving engines check first.
+
+#### Huawei has opened its IR — but not yet as a contract
+
+AscendNPU-IR is Apache-2.0, public since 2025-09, mirrored on GitHub, with a SIG. Its README pitches both "high-level abstraction interfaces" and "fine-grained performance control" over on-chip addresses, synchronization points, and ping-pong. <sup>[[131]](#ref-131)</sup> What it lacks, compared with CUDA Tile IR, is a versioned specification, a stability promise, and a conformance suite.
+
+#### Reading this from Ascend
+
+**Register Ascend where the front-ends are.** An AscendNPU-IR or PyAsc2 back-end for Helion and Inductor would put Ascend next to Pallas and FlyDSL, instead of reaching those users only through Triton-Ascend.
+
+**Turn AscendNPU-IR into a contract.** Open source is necessary but not sufficient. A spec, a bytecode or stability promise, and a conformance suite are what made CUDA Tile IR a target for third parties.
+
+**Interoperate at the ABI, day one.** `torch.library` registration, DLPack, and possibly TVM-FFI let vLLM-Ascend adopt PyAsc2 kernels without glue code.
 
 ### 2.10 Synthesis: where this lands in 1–2 years
 
-_TODO (Stage 3)._
+The trends in §2.0–§2.9 point the same way. The projections below follow from that evidence; they are judgments, not measurements.
+
+#### What the evidence establishes
+
+| Trend | Evidence | Section |
+|---|---|---|
+| Python tile DSLs are the default kernel front-end | Nine DSLs from competing vendors, no exceptions | §2.2 |
+| One tier is not enough | NVIDIA (cuTile + CuTe DSL), AMD (Triton + FlyDSL), Triton (+ Gluon) | §2.3, §2.4, §2.6 |
+| Triton is a front-end standard, not a kernel standard | Every non-GPU port extends the language; Ascend kernels are Ascend-specific source | §2.4 |
+| Compilers search more, humans write less | Helion, LLM-guided and flag-level autotuning; tuning moved offline | §2.5 |
+| Unusual silicon gets its own language | Google, AWS, Tenstorrent, Huawei | §2.6 |
+| The peak tier is moving to Python | CuTe DSL in FlashInfer and TensorRT-LLM | §2.7 |
+| Models write DSLs far better than Ascend C | 2.5% direct vs 90.4% through a DSL | §2.8 |
+| Infrastructure standardizes; languages do not | MLIR, `torch.library`, DLPack; only NVIDIA publishes a tile-IR contract | §2.9 |
+
+#### Where this lands in 1–2 years
+
+1. **Every serious accelerator ships at least two Python tiers.** A portable, Triton-shaped tier for breadth and a native tier for peak. Vendors with one tier will add the other.
+2. **The native tier absorbs the hot path.** CuTe DSL is displacing C++ templates on NVIDIA. The equivalent move on Ascend replaces hand-written Ascend C in serving engines, which is where the 61 vLLM-Ascend ops sit today.
+3. **Front-ends consolidate; back-ends multiply.** Helion and Inductor become the neutral layer that dispatches to vendor DSLs. Being a registered back-end matters more than front-end syntax.
+4. **Models become a primary DSL user.** A DSL's generability — how well models write it — becomes a design criterion alongside human LOC and performance. Offline, LLM-assisted tuning becomes standard.
+5. **In-kernel communication reaches the DSLs.** NKI already has it. The megakernel workloads of §2.1 will pull it into GPU DSLs, and whichever Ascend DSL exposes HCCL inside a kernel first will own those workloads on Ascend.
+6. **IR contracts decide ecosystems.** The vendor whose tile IR has a spec and conformance suite gets third-party front-ends. NVIDIA is the only one today.
+
+#### What this means for PyAsc2
+
+- **Tier:** the native, peak-performance tier, complementary to Triton-Ascend. This is where every other vendor has added a second language, and where Ascend's gap is widest.
+- **Entry point:** the Ascend C hot path in vLLM-Ascend, not the Triton long tail.
+- **Differentiators that the evidence supports:** automatic synchronization and UB allocation, the failures that Triton-on-Ascend users document publicly; offline tuning with deterministic dispatch; model-generability by design.
+- **Ecosystem moves:** a published AscendNPU-IR contract, back-ends in Helion and Inductor, and a public multi-DSL benchmark on the Appendix A.1 kernel set.
+
+These are inputs to §3, which turns them into positioning, pillars, risks, and milestones.
 
 ---
 
@@ -775,6 +917,35 @@ _TODO (Stage 4)._
 | <a name="ref-100"></a>[100] | This repo's CATLASS TLA DSL analysis — Python front-end on AscendNPU-IR, 950 only, first commit 2026-05-16, never in a tagged release | [`catlass-dsl-analysis.md`](catlass-dsl-analysis.md) |
 | <a name="ref-101"></a>[101] | AWS Neuron Kernel Interface (NKI) documentation — Python kernel DSL for Trainium/Inferentia | https://awsdocs-neuron.readthedocs-hosted.com/en/latest/nki/index.html |
 | <a name="ref-102"></a>[102] | PyTorch Foundation TAC issue #26 (Helion) — CI on H100, B200, MI325X; users: vLLM, IBM Research, Meta internal teams | https://github.com/pytorch-fdn/tac/issues/26 |
+| <a name="ref-103"></a>[103] | DSL kernel counts at repository heads, 2026-09-19 — `@triton.jit` excl. tests/benchmarks; CuTe DSL = files importing `cutlass.cute`; cuTile = files importing `cuda.tile`. vLLM [`v1/attention/ops`](https://github.com/vllm-project/vllm/tree/main/vllm/v1/attention/ops) · [`fused_moe/experts`](https://github.com/vllm-project/vllm/tree/main/vllm/model_executor/layers/fused_moe/experts); SGLang [`kernels/ops`](https://github.com/sgl-project/sglang/tree/main/python/sglang/kernels/ops); Liger [`ops/cutile/ops`](https://github.com/linkedin/Liger-Kernel/tree/main/src/liger_kernel/ops/cutile/ops) (cuTile added [PR #1228](https://github.com/linkedin/Liger-Kernel/pull/1228), 2026-05-27) | https://github.com/vllm-project/vllm · https://github.com/sgl-project/sglang |
+| <a name="ref-104"></a>[104] | FlashInfer CuTe DSL — first commit [PR #1331](https://github.com/flashinfer-ai/flashinfer/pull/1331) (2025-08-13); cuTile GEMM backend [PR #3426](https://github.com/flashinfer-ai/flashinfer/pull/3426) (2026-06-12) | https://github.com/flashinfer-ai/flashinfer/tree/main/flashinfer/cute_dsl · https://github.com/flashinfer-ai/flashinfer/tree/main/flashinfer/gemm/kernels/cutile |
+| <a name="ref-105"></a>[105] | TensorRT-LLM — CuTe DSL kernels ([PR #7632](https://github.com/NVIDIA/TensorRT-LLM/pull/7632), 2025-09-16) and cuTile kernels ([PR #9725](https://github.com/NVIDIA/TensorRT-LLM/pull/9725), 2026-02-02) | https://github.com/NVIDIA/TensorRT-LLM/tree/main/tensorrt_llm/_torch/cute_dsl_kernels · https://github.com/NVIDIA/TensorRT-LLM/tree/main/tensorrt_llm/_torch/cuda_tile_kernels |
+| <a name="ref-106"></a>[106] | vLLM Helion ops (7 ops; optional dependency via [PR #32482](https://github.com/vllm-project/vllm/pull/32482)) | https://github.com/vllm-project/vllm/tree/main/vllm/kernels/helion/ops |
+| <a name="ref-107"></a>[107] | PyTorch Inductor codegen directory — `triton.py`, `cutedsl/`, `pallas.py`, `flydsl/` | https://github.com/pytorch/pytorch/tree/main/torch/_inductor/codegen |
+| <a name="ref-108"></a>[108] | `vllm-project/tpu-inference` kernels — Pallas (`pallas_call`) for ragged paged attention, MLA, fused MoE | https://github.com/vllm-project/tpu-inference/tree/main/tpu_inference/kernels |
+| <a name="ref-109"></a>[109] | vLLM-Ascend — 61 Ascend C custom ops (directories with `op_kernel/` under `csrc/`) and 140 `@triton.jit` in 75 files under `ops/triton`, counted 2026-09-19 | https://github.com/vllm-project/vllm-ascend/tree/main/csrc · https://github.com/vllm-project/vllm-ascend/tree/main/vllm_ascend/ops/triton |
+| <a name="ref-110"></a>[110] | KernelBench, arXiv 2502.10517 (2025-02-14) — 250 tasks; frontier models beat PyTorch in under 20% of cases; [README](https://github.com/ScalingIntelligence/KernelBench/blob/main/README.md) back-ends cuda/triton/cute/tilelang/thunderkittens/hip | https://arxiv.org/abs/2502.10517 |
+| <a name="ref-111"></a>[111] | TechCrunch, "Sakana walks back claims that its AI can dramatically speed up model training" (2025-02-21) | https://techcrunch.com/2025/02/21/sakana-walks-back-claims-that-its-ai-can-dramatically-speed-up-model-training/ |
+| <a name="ref-112"></a>[112] | METR, "Measuring Automated Kernel Engineering" (2025-02-14) | https://metr.org/blog/2025-02-14-measuring-automated-kernel-engineering/ |
+| <a name="ref-113"></a>[113] | Cognition, "Kevin-32B" (2025-05-06) — reward hacking via PyTorch fallbacks | https://cognition.com/blog/kevin-32b |
+| <a name="ref-114"></a>[114] | "The Correctness Illusion," arXiv 2606.20128 (2026-06) — allclose-style checks certify buggy Triton kernels | https://arxiv.org/abs/2606.20128 |
+| <a name="ref-115"></a>[115] | NVIDIA blog, "Automating GPU Kernel Generation with DeepSeek-R1 and Inference Time Scaling" (2025-02-12) — 100% L1, 96% L2 correct | https://developer.nvidia.com/blog/automating-gpu-kernel-generation-with-deepseek-r1-and-inference-time-scaling/ |
+| <a name="ref-116"></a>[116] | Triton-specific generators: Meta [KernelLLM](https://huggingface.co/facebook/KernelLLM); [AutoTriton](https://arxiv.org/abs/2507.05687); AMD [GEAK](https://arxiv.org/abs/2507.23194); [TritonBench](https://arxiv.org/abs/2502.14752) — SOTA LLMs "struggle to generate efficient Triton operators" | https://arxiv.org/abs/2502.14752 |
+| <a name="ref-117"></a>[117] | KernelEvolve (Meta), arXiv 2512.23236 — deployed on production recommendation models across NVIDIA, AMD, MTIA; Triton and CuTe DSL; 100% pass on 250 KernelBench problems | https://arxiv.org/abs/2512.23236 |
+| <a name="ref-118"></a>[118] | Google DeepMind, "AlphaEvolve" (2025-05-14) — 23% speedup on a Gemini matmul kernel, 1% training-time reduction | https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/ |
+| <a name="ref-119"></a>[119] | MultiKernelBench, arXiv 2507.17773 (v2 2025-07) — 285 tasks on NVIDIA, Huawei NPU, TPU; greedy Pass@1 CUDA 47.0%, AscendC 2.5%, Pallas 8.4%; "74.8% of compilation failures contain the keyword 'no member named'" | https://arxiv.org/html/2507.17773v2 |
+| <a name="ref-120"></a>[120] | AscendCraft, arXiv 2601.22760 (2026-01-30) — DSL-guided AscendC generation; 98.1% compilation, 90.4% correctness, 46.2% ≥ PyTorch eager | https://arxiv.org/abs/2601.22760 |
+| <a name="ref-121"></a>[121] | AscendKernelGen, arXiv 2601.07160 — general LLMs "near-zero"; Level-2 compilation 0% → 95.5% (Pass@10), correctness 64.3%; NPUKernelBench | https://arxiv.org/abs/2601.07160 |
+| <a name="ref-122"></a>[122] | "Compiler-Grounded Hierarchical Diagnosis for LLM-Based Triton Kernel Optimization," arXiv 2607.23089 — Triton-Ascend on 37 Ascend 950 entries; 4.35× geomean, 2.73× median, initial → optimized | https://arxiv.org/abs/2607.23089 |
+| <a name="ref-123"></a>[123] | GitHub code search file counts, 2026-09-19 (approximate; gitee/gitcode excluded): `__global__ void`, `@triton.jit`, `__aicore__`, `import cutlass.cute`, `import tilelang`, `import helion`, `import cuda.tile` | https://github.com/search?q=%22%40triton.jit%22&type=code |
+| <a name="ref-124"></a>[124] | `NVIDIA/cuda-tile` README — CUDA Tile IR MLIR dialect, bytecode, specification, conformance test suite (repo 2025-11-05). CuTe DSL on MLIR: [`core/ops.py`](https://github.com/NVIDIA/cutlass/blob/main/python/CuTeDSL/cutlass/core/ops.py) | https://github.com/NVIDIA/cuda-tile/blob/main/README.md |
+| <a name="ref-125"></a>[125] | `triton-lang/triton-ext` (runtime-loaded out-of-tree backends and dialects); Triton-Ascend [`TritonToLinalg`](https://github.com/triton-lang/triton-ascend/tree/main/third_party/ascend/include/TritonToLinalg) | https://github.com/triton-lang/triton-ext |
+| <a name="ref-126"></a>[126] | Helion compiler back-ends — Triton, TileIR, Pallas, CuTe, Metal, FlyDSL | https://github.com/pytorch/helion/tree/main/helion/_compiler |
+| <a name="ref-127"></a>[127] | vLLM `direct_register_custom_op` ([`torch_utils.py`](https://github.com/vllm-project/vllm/blob/main/vllm/utils/torch_utils.py)); Apache TVM-FFI — "Open ABI and FFI for Machine Learning Systems" | https://github.com/apache/tvm-ffi/blob/main/README.md |
+| <a name="ref-128"></a>[128] | DLPack v1.3 (2026-01-26); CuTe DSL `from_dlpack` ([`runtime.py`](https://github.com/NVIDIA/cutlass/blob/main/python/CuTeDSL/cutlass/cute/runtime.py)) | https://github.com/dmlc/dlpack/releases |
+| <a name="ref-129"></a>[129] | StableHLO compatibility guarantees — 5 years backward, 2 years forward | https://github.com/openxla/stablehlo/blob/main/docs/compatibility.md |
+| <a name="ref-130"></a>[130] | UXL Foundation language workstream — C++/SYCL/oneAPI | https://github.com/uxlfoundation/foundation/tree/main/language |
+| <a name="ref-131"></a>[131] | `Ascend/AscendNPU-IR` — Apache-2.0, created 2025-09-07; "high-level abstraction interfaces" and "fine-grained performance control"; GitHub mirror | https://gitcode.com/Ascend/AscendNPU-IR · https://github.com/Ascend/AscendNPU-IR |
 
 ---
 

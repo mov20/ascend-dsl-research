@@ -104,6 +104,48 @@
 
 ---
 
+## 2026-08-10 → 2026-09-19 — Python DSL Trends Doc, §2.0–§2.10
+
+**Context:** [`docs/python-dsl-trends-2026H1.md`](python-dsl-trends-2026H1.md) built stage by stage.
+§2.0–§2.3 merged in August (#37, #38, #41, #43, #44). §2.4–§2.10 drafted 2026-09-19 (#45, #46, #47).
+Oleg's decisions on 2026-09-18: keep the H1 title and include Jul–Sep 2026 items flagged "post-H1";
+finish §2 before §3 Strategy, which needs his positioning input.
+
+### Findings That Change Our Picture
+
+**1. Triton-Ascend now lives in the `triton-lang` org** (repo 2026-01-05, gitcode frozen 2026-05-18),
+under Triton-community governance. Its latest release tracks upstream 3.2 while upstream is at 3.8; a
+weekly AI-assisted merge workflow chases upstream.
+
+**2. The only public Triton-vs-Ascend C number** is one GroupGEMM chart on 950: near parity on average,
+0.70× on FP8 backward.
+
+**3. Every vendor with a Triton path added a native tier below it:** NVIDIA CuTe DSL, AMD FlyDSL, Triton's
+own Gluon. PyAsc2 fits that tier, complementary to Triton-Ascend.
+
+**4. On Ascend, Ascend C owns the hot path.** vLLM-Ascend has 61 Ascend C ops and 140 Triton kernels.
+PyAsc2's entry point is the Ascend C ops.
+
+**5. LLMs write Ascend C at 2.5% Pass@1 (MultiKernelBench), but 90.4% correct through AscendCraft's DSL.**
+This is an argument for PyAsc2 as a model-generable intermediate.
+
+**6. AWS NKI is the only vendor DSL with in-kernel collectives** (stable 2026-04). The §2.0 claim that
+no tile DSL has them was corrected to "no GPU tile DSL".
+
+**7. Huawei has five public Python front-ends**, more than any vendor, with no published tier map.
+AscendNPU-IR is open, but it is not yet a contract: it has no spec, stability promise or conformance suite.
+
+### Corrections Made
+
+- TT-Lang is a Python tile DSL, verified from two sources. It is neither Triton nor C++; the C++ layer is TT-Metalium.
+- The §2.2 table cited NKI to the vLLM-Ascend reference by mistake; it now has its own reference.
+
+### Follow-ups Added
+
+See Open TODOs below.
+
+---
+
 ## 2026-08-07 — CATLASS TLA DSL Analysis
 
 **Context:** Oleg requested a full analysis of the `dsl` branch of Huawei's CATLASS repository
@@ -179,6 +221,11 @@ can hide without paying for it.
 
 ## Open TODOs
 
+- [ ] Write trends doc §3 Strategy (positioning, pillars, risks, milestones) — needs Oleg's positioning input
+- [ ] Write trends doc §1 Highlights — after §3
+- [ ] Resolve trends doc Appendix A.1 (broader kernel set) and A.2 (dynamic shapes)
+- [ ] Update `docs/asic-landscape.md` DSL matrix — Trainium has NKI; Tenstorrent has TT-Lang; Cambricon and Moore Threads have Triton backends
+- [ ] Propose a public multi-DSL Ascend benchmark: Triton-Ascend, TileLang-Ascend, PyAsc2, Ascend C
 - [ ] Deep dive into AscendCraft paper — DSL design, host/kernel split, UB/L1 buffer model
 - [ ] Deep dive into TileLang-Ascend — get actual benchmark numbers vs AscendC
 - [ ] Start designing syntax for our DSL
