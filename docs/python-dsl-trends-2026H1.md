@@ -1,6 +1,6 @@
 # Python DSL Programming Models for AI Accelerators — Industry Trends & Strategic Outlook (2025–2026 H1)
 
-*Last updated: 2026-08-05*
+*Last updated: 2026-09-19*
 
 > Companion to [`asic-landscape.md`](asic-landscape.md) (accelerator hardware + DSL-support matrix) and [`../pyasc2-design.md`](../pyasc2-design.md) / upstream `compiler-team/pyasc@v2` design docs (per-DSL *mechanics*). This document operates one altitude up: **cross-DSL trend synthesis, adoption momentum, vendor strategy, and the AI-generated-kernel wave** — used to justify Ascend's continued investment in a native Python DSL (**PyAsc2 / `asc2`**). It does not repeat programming-model mechanics; it references them.
 
@@ -465,7 +465,73 @@ Five implications carry over.
 
 ### 2.4 Triton as the de-facto cross-vendor standard
 
-_TODO (Stage 1)._
+Triton is the only kernel language with backends from more than one hardware vendor. That makes it the reference point every new DSL, PyAsc2 included, is measured against. This section tests how far the "standard" claim holds: breadth of backends, depth of adoption, and how portable Triton source really is once it leaves NVIDIA.
+
+#### The backend map, 2026-09
+
+| Target | Maintainer | Relationship to upstream | First public | Latest |
+|---|---|---|---|---|
+| NVIDIA (PTX) | OpenAI + NVIDIA | In-tree | 2021 | 3.8.0, 2026-08-28 <sup>[[64]](#ref-64)</sup> |
+| NVIDIA CUDA Tile IR | NVIDIA | Incubator repo in `triton-lang` org | 2025-12 | active <sup>[[38]](#ref-38)</sup> <sup>[[77]](#ref-77)</sup> |
+| AMD ROCm | AMD | In-tree since 2024-01 | 2021-08 (fork) | ships with 3.8.0 <sup>[[64]](#ref-64)</sup> |
+| Intel XPU | Intel | Out-of-tree backend module | 2023-12 | 3.8.0, 2026-09-08 <sup>[[74]](#ref-74)</sup> |
+| **Huawei Ascend** | Huawei, hosted in `triton-lang` org | **Full fork** + AscendNPU-IR submodule | 2025-05 | 3.2.2, 2026-07-31 <sup>[[61]](#ref-61)</sup> |
+| Meta MTIA | Meta | Internal, not public | — | paper 2026-07 <sup>[[69]](#ref-69)</sup> |
+| Qualcomm Hexagon NPU | Qualcomm | Triton → Linalg inside `hexagon-mlir` | 2025-12 | active <sup>[[78]](#ref-78)</sup> |
+| Tenstorrent | Kernelize (third party) | Plugin | 2025-09 | active <sup>[[79]](#ref-79)</sup> |
+| 15+ Chinese vendors | BAAI FlagOS + vendors | FlagTree fork, Triton 3.2–3.6 per backend | 2025-05 | 0.6.0, 2026-06 <sup>[[67]](#ref-67)</sup> |
+| CPU | Community | Long-lived experimental fork | 2024-05 | active <sup>[[80]](#ref-80)</sup> |
+
+Ten targets, at least eight hardware vendors. Only two, NVIDIA and AMD, live in the upstream tree. Every other accelerator is a fork, a plugin, or a private build.
+
+#### Evidence for "de-facto standard"
+
+- **It is the default code generator.** `torch.compile` emits Triton for GPUs, so every PyTorch user who compiles a model runs Triton kernels without writing one. <sup>[[39]](#ref-39)</sup>
+- **Serving stacks are built on it.** vLLM contains **655** `@triton.jit` kernels across 242 files against 98 `.cu` files; SGLang contains **792** across 304 files against 55. <sup>[[65]](#ref-65)</sup> Counts include tests; the ratio, not the absolute number, is the point.
+- **Operator libraries target it for portability.** BAAI's FlagGems joined the PyTorch Ecosystem in 2025-06 with 180+ Triton operators across 10+ backends and now carries 17 vendor directories. <sup>[[68]](#ref-68)</sup>
+- **The first non-GPU production deployment exists** *(post-H1, 2026-07)*. Meta runs Triton on MTIA-2i across ~60 model types, covering **50% of layers** and **47% of non-GEMM time**, with performance "competitive with expert-tuned C++." <sup>[[69]](#ref-69)</sup>
+- **Ascend joined the community formally.** Triton-Ascend moved from gitcode to `github.com/triton-lang/triton-ascend` (repo created 2026-01-05; gitcode frozen 2026-05-18). Its governance file places it "under the Triton community, with role appointments ultimately decided by the Triton community." <sup>[[60]](#ref-60)</sup> The `triton-lang` org now hosts NVIDIA's, Huawei's, and the CPU backends side by side.
+
+#### Where the claim breaks
+
+**Portable source is the exception, not the rule, off NVIDIA.** Triton-Ascend's own migration guide says the grid is a "physical core group mapping," capped at 65,535, and kernels must be retiled by hand to fit the on-chip Unified Buffer (UB). <sup>[[75]](#ref-75)</sup> It adds Ascend-only APIs for UB/L1 address spaces, `fixpipe`, and explicit block sync. In practice, downstream projects maintain separate Ascend kernel sets:
+
+- vLLM-Ascend routes 136 files through a helper that resolves ops from `triton.language.extra.cann.extension` and reads core counts and UB size. <sup>[[30]](#ref-30)</sup>
+- Liger-Kernel keeps a separate `_ascend` set of 27 ops with its own "UB Manager" to prevent buffer overflow. <sup>[[66]](#ref-66)</sup>
+- `flash-linear-attention` ships a dedicated `triton_ascend` backend family (§2.1). <sup>[[32]](#ref-32)</sup>
+
+**Every serious non-GPU port extends the language.** MTIA uses "minimal language extensions that expose MTIA-specific architectural features." <sup>[[69]](#ref-69)</sup> FlagTree adds its own TLE extensions in three tiers. <sup>[[67]](#ref-67)</sup> Ascend adds `extra.cann`. The common core is Triton; the performance-critical surface is vendor-specific.
+
+**Upstream itself is fragmenting by architecture.** Gluon, Triton's low-level dialect, organizes its language modules as `nvidia/{ampere,hopper,blackwell,rubin}` and `amd/{cdna3,cdna4,cdna5,rdna3,rdna4,gfx1250}`. <sup>[[76]](#ref-76)</sup> Peak performance on each chip is being bought with per-chip code, inside the "portable" project.
+
+**Forks pay a permanent rebase tax.** Triton-Ascend's latest release tracks upstream **3.2** while upstream is at **3.8**. Main has climbed to 3.6 through three large version bumps in 2026. <sup>[[61]](#ref-61)</sup> A weekly workflow added in 2026-07 automates the chase: "detect gap → merge → AI resolve conflicts → build → NPU test → AI fix retry loop." <sup>[[62]](#ref-62)</sup> The cost is structural: Triton 3.8 alone removed `tt.make_tensor_ptr` and `tt.advance` and changed the tensor-descriptor IR, all flagged as breaking for out-of-tree MLIR. <sup>[[64]](#ref-64)</sup> FlagTree states the result plainly: "Each backend is based on different versions of Triton." <sup>[[67]](#ref-67)</sup>
+
+**Upstream's answer is a plugin interface, not a neutral IR.** Since Triton 3.7, out-of-tree passes, dialects, and backends load as shared libraries at runtime, without a custom Triton build. <sup>[[72]](#ref-72)</sup> Microsoft stopped maintaining `triton-shared`, the architecture-neutral Linalg lowering; Meta has taken it over. <sup>[[71]](#ref-71)</sup>
+
+**Governance is corporate, not neutral.** Upstream has ~20k stars and ~680 contributors, and the 3.8 release credits Meta, AMD, NVIDIA, OpenAI, Intel, and Google. <sup>[[64]](#ref-64)</sup> But Triton is not a foundation project. Helion joined the PyTorch Foundation in 2026-04; Triton did not. <sup>[[70]](#ref-70)</sup> The 2026-01 community meeting recorded that "OSS Triton priorities [are] aligned with OpenAI's internal use cases." <sup>[[71]](#ref-71)</sup>
+
+**Vendors hedge with their own lower tier.** NVIDIA shipped cuTile and CuTe DSL (§2.3). AMD shipped **FlyDSL**, a Python DSL with instruction-level control, already in production through AITER into vLLM and SGLang. AMD's own presenter judged that Gluon "can't do instruction-level interleaving or register control needed for compute-bound cases." <sup>[[72]](#ref-72)</sup> Even on NVIDIA, the Tile IR backend ignores `num_warps` and still has "lots of Triton Ops not implemented yet." <sup>[[73]](#ref-73)</sup>
+
+#### Triton-Ascend performance: one published chart
+
+Huawei's only public Triton-vs-Ascend C comparison is a GroupGEMM chart on Ascend 950 (2026-03-30). Speedup is Ascend C time divided by Triton time, read from the published chart: <sup>[[63]](#ref-63)</sup>
+
+| GroupGEMM, Ascend 950 | FP16 | BF16 | FP8 |
+|---|---|---|---|
+| Forward, mean | 1.05× | 1.06× | 0.97× |
+| Backward, mean | 0.98× | 0.94× | **0.70×** |
+
+Per-shape results range from 0.31× to 2.70×. The average is near parity; the variance and the FP8 backward result are the story. No cross-operator benchmark has been published, by Huawei or anyone else.
+
+#### Reading this from Ascend
+
+**Triton is a standard for the front-end, not for the kernel.** The API, the tooling, and the developer population are shared. Kernels that perform on Ascend are Ascend-specific source. This is the honest version of the portability claim, and it is the one PyAsc2 should compete against.
+
+**Ascend has already made its Triton bet, and it is a good one.** Moving Triton-Ascend into `triton-lang` buys legitimacy and a seat at the table. It also commits Huawei to an indefinite rebase effort against an upstream that breaks out-of-tree code every release. The 3.7 plugin interface is the obvious lever to shrink that fork.
+
+**PyAsc2 fits the tier every other vendor has added below Triton.** NVIDIA (CuTe DSL), AMD (FlyDSL), and Triton itself (Gluon) all concluded that Triton's abstraction level cannot reach peak on compute-bound kernels. The FP8 backward result, 0.70× of Ascend C, is Ascend's version of the same finding. Positioning PyAsc2 as complementary to Triton-Ascend, rather than competing with it, matches what the industry has converged on.
+
+**Publish reproducible numbers.** MTIA published ~60-model coverage; Triton-Ascend published one chart. A benchmark covering Triton-Ascend, TileLang-Ascend, PyAsc2, and hand-written Ascend C on the kernel set in [Appendix A.1](#a1-broaden-the-performance-vs-usability-comparison) would become the reference others are judged against.
 
 ### 2.5 Front-ends going higher-level and autotuned
 
@@ -576,6 +642,27 @@ _TODO (Stage 4)._
 | <a name="ref-57"></a>[57] | `NVIDIA/warp` CHANGELOG, v1.5.0 (2024-12-02) — first tile primitives: *"Support for cooperative tile-based primitives using cuBLASDx and cuFFTDx"*; original 2022 positioning was differentiable graphics and physics simulation | [CHANGELOG](https://github.com/NVIDIA/warp/blob/main/CHANGELOG.md) · [2022 announcement](https://developer.nvidia.com/blog/creating-differentiable-graphics-and-physics-simulation-in-python-with-nvidia-warp/) |
 | <a name="ref-58"></a>[58] | NVIDIA, "NVIDIA Announces Availability for cuNumeric Public Alpha" (2021-11-09) — distributed NumPy drop-in, *"requires zero code changes"*; an array library, not a kernel DSL | https://developer.nvidia.com/blog/nvidia-announces-availability-for-cunumeric-public-alpha/ |
 | <a name="ref-59"></a>[59] | `NVIDIA/numba-cuda` — NVIDIA-maintained CUDA target for Numba, first release 2024-06-25; Numba's built-in CUDA target is *"deprecated, with further development moved to the NVIDIA numba-cuda package"* | https://github.com/NVIDIA/numba-cuda · https://nvidia.github.io/numba-cuda/ |
+| <a name="ref-60"></a>[60] | Triton-Ascend moves to the `triton-lang` org — repo created 2026-01-05; gitcode/mirror final commit "Move this repo to github.com/triton-lang/triton-ascend" (2026-05-18); [`GOVERNANCE.md`](https://github.com/triton-lang/triton-ascend/blob/main/GOVERNANCE.md): "an open-source project under the Triton community"; [`MAINTAINERS.md`](https://github.com/triton-lang/triton-ascend/blob/main/MAINTAINERS.md) | https://github.com/Ascend/triton-ascend/commit/865691e2e9b656bc58008170207b4108d92e8dd1 |
+| <a name="ref-61"></a>[61] | Triton-Ascend versions — latest release v3.2.2 (2026-07-31); first PyPI release 3.2.0rc2 (2025-05-26); main `version.txt` 3.2.0→3.3.1 (2026-01-27) → 3.5.0 (2026-03-10) → 3.6.0 (2026-07-10): [commit](https://github.com/triton-lang/triton-ascend/commit/d2fb96f4d2c569bd82af33a9364e8b6c3444a98a) · [commit](https://github.com/triton-lang/triton-ascend/commit/1da46f5e95e4f26a5b9275c460dd769359b4941f) · [commit](https://github.com/triton-lang/triton-ascend/commit/0ae554783b8b495fa19c3690bd1afc8265297694) | https://github.com/triton-lang/triton-ascend/releases/tag/v3.2.2 · https://pypi.org/project/triton-ascend/#history |
+| <a name="ref-62"></a>[62] | Triton-Ascend "Sync Upstream Triton" weekly workflow (added 2026-07-17) — "detect gap → merge → AI resolve conflicts → build → NPU test → AI fix retry loop" | https://github.com/triton-lang/triton-ascend/blob/main/.github/workflows/sync-upstream.yml |
+| <a name="ref-63"></a>[63] | Triton-Ascend GroupGEMM speedup vs Ascend C on Ascend 950 (figure dated 2026-03-30); means read from the SVG; README "Performance" section | https://github.com/triton-lang/triton-ascend/blob/main/docs/en/figures/groupgemm_speedup.svg · https://gitcode.com/Ascend/triton-ascend/blob/main/README.md |
+| <a name="ref-64"></a>[64] | Triton v3.8.0 release notes (2026-08-28) — contributors from Meta, AMD, NVIDIA, OpenAI, Intel, Google; removes `tt.make_tensor_ptr`/`tt.advance`, changes `tensordesc` IR (breaking for out-of-tree MLIR). AMD in-tree since [PR #2967](https://github.com/triton-lang/triton/pull/2967) (2024-01-19) | https://github.com/triton-lang/triton/releases/tag/v3.8.0 |
+| <a name="ref-65"></a>[65] | `@triton.jit` counts, measured 2026-09-19 by grep incl. tests: vLLM @`4cc15f2` — 655 in 242 files, 98 `.cu` files; SGLang @`7fac84b` — 792 in 304 files, 55 `.cu` files | https://github.com/vllm-project/vllm/tree/4cc15f2 · https://github.com/sgl-project/sglang/tree/7fac84b |
+| <a name="ref-66"></a>[66] | Liger-Kernel backends — separate `_ascend` set (27 ops, from 2025-12-12) with a UB Manager design; opt-in cuTile and CuTe DSL backends from 2026-05-27 | https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/backends/_ascend/ascend-ub-manager-design.md · https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/backends/README.md |
+| <a name="ref-67"></a>[67] | BAAI FlagOS `FlagTree` README — "Each backend is based on different versions of Triton"; main 3.6 (NVIDIA, AMD, Enflame, Iluvatar, Hygon, Moore Threads, MetaX, KLX, T-Head, others), Ascend 3.5, Cambricon 3.2; TLE language extensions | https://github.com/flagos-ai/FlagTree/blob/main/README.md |
+| <a name="ref-68"></a>[68] | PyTorch blog, "FlagGems Joins the PyTorch Ecosystem" (2025-06-27) — 180+ Triton operators, 10+ backends | https://pytorch.org/blog/flaggems-joins-the-pytorch-ecosystem-triton-powered-operator-library-for-universal-ai-acceleration/ |
+| <a name="ref-69"></a>[69] | "Triton for MTIA: Bridging the Programming Model Gaps for Custom AI Accelerators," arXiv 2608.00325 (2026-07-31) — ~60 model types; 50% of layers, 47% of non-GEMM time; "minimal language extensions" | https://arxiv.org/abs/2608.00325 |
+| <a name="ref-70"></a>[70] | Linux Foundation press release — "PyTorch Foundation Welcomes Helion as a Foundation-Hosted Project" (2026-04-07); hosted projects: PyTorch, vLLM, DeepSpeed, Ray, Helion | https://www.linuxfoundation.org/press/pytorch-foundation-welcomes-helion-as-a-foundation-hosted-project-to-standardize-open-portable-and-accessible-ai-kernel-authoring |
+| <a name="ref-71"></a>[71] | Triton community meetup notes, 2026-01-06 — triton-shared maintenance moves to Meta; "OSS Triton priorities aligned with OpenAI's internal use cases" | https://github.com/triton-lang/triton/blob/main/docs/meetups/01-06-2026/notes.md |
+| <a name="ref-72"></a>[72] | Triton community meetup notes, 2026-07-08 — plugin interface (`TRITON_PLUGIN_PATHS`) "shipped in Triton 3.7"; AMD FlyDSL (in production via AITER → vLLM/SGLang; Gluon "can't do instruction-level interleaving or register control") | https://github.com/triton-lang/triton/blob/main/docs/meetups/07-08-2026/notes.md |
+| <a name="ref-73"></a>[73] | Triton community meetup notes, 2026-03-04 — CUDA Tile IR backend ignores `num_warps`; "lots of Triton Ops not implemented yet" | https://github.com/triton-lang/triton/tree/main/docs/meetups/03-04-2026 |
+| <a name="ref-74"></a>[74] | Intel XPU backend for Triton — "out of tree backend module"; v3.8.0 (2026-09-08) | https://github.com/intel/intel-xpu-backend-for-triton/blob/main/README.md · https://github.com/intel/intel-xpu-backend-for-triton/releases/tag/v3.8.0 |
+| <a name="ref-75"></a>[75] | Triton-Ascend migration guide — grid as "physical core group mapping," 65,535 cap, manual retiling to on-chip buffer; Ascend-only API extensions | https://github.com/triton-lang/triton-ascend/blob/main/docs/en/migration_guide/architecture_difference.md · https://github.com/triton-lang/triton-ascend/tree/main/docs/en/triton_api_extension |
+| <a name="ref-76"></a>[76] | Gluon language modules, per-architecture: `nvidia/{ampere,hopper,blackwell,rubin}`, `amd/{cdna3,cdna4,cdna5,rdna3,rdna4,gfx1250}` | https://github.com/triton-lang/triton/tree/main/python/triton/experimental/gluon/language |
+| <a name="ref-77"></a>[77] | `triton-lang/Triton-to-tile-IR` — NVIDIA incubator repo, created 2025-12-13 | https://github.com/triton-lang/Triton-to-tile-IR |
+| <a name="ref-78"></a>[78] | Qualcomm `hexagon-mlir` (2025-12) and blog "Build faster on Hexagon NPU: Triton/PyTorch with hexagon-mlir" (2026-02) | https://github.com/qualcomm/hexagon-mlir · https://www.qualcomm.com/developer/blog/2026/02/build-faster-on-hexagon-npu-tritor-pytorch-with-hexagon-mlir-open-source |
+| <a name="ref-79"></a>[79] | `kernelize-ai/triton-tenstorrent` — third-party Triton plugin for Tenstorrent (created 2025-09-16) | https://github.com/kernelize-ai/triton-tenstorrent/blob/main/README.md |
+| <a name="ref-80"></a>[80] | `triton-lang/triton-cpu` — experimental CPU backend fork (created 2024-05-10) | https://github.com/triton-lang/triton-cpu/blob/main/README.md |
 
 ---
 
