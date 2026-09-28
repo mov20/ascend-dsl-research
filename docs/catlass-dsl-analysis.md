@@ -4,7 +4,7 @@
 
 > Analysis of the `dsl` branch of **CATLASS**, Huawei's Ascend operator template library, which
 > carries a Python frontend ("TLA DSL") built on MLIR. Companion to
-> [`python-dsl-trends-2026H1.md`](python-dsl-trends-2026H1.md) (cross-DSL trend synthesis) and
+> [`python-dsl-trends-2026H2.md`](python-dsl-trends-2026H2.md) (cross-DSL trend synthesis, current edition) and
 > [`asic-landscape.md`](asic-landscape.md) (hardware + DSL-support matrix). This document covers a
 > single project in depth: what it is, how it compiles, what its programming model looks like for
 > vector / cube / mixed kernels, what synchronization and communication primitives it offers, and
