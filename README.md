@@ -16,6 +16,8 @@ Python DSL → MLIR → AscendC → CANN → NPU binary
 
 ## Files
 
+- `docs/cannbot-dsl-analysis.md` — CANNBot-DSL architecture, abstraction layers, PyAsc v2/AscTile comparison, and technology-transfer opportunities
+
 - `pyasc2-design.md` — primary design document (requirements, challenges, programming-model analysis, API spec)
 - `PROJECT.md` — project tracker, open questions, decisions log
 - `ascend-dsl-comparison.md` — high-level comparison of existing DSLs
